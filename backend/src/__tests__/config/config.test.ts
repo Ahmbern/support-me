@@ -146,6 +146,7 @@ describe("rate limit configuration (#25)", () => {
       auth: { windowMs: 60_000, ipMax: 30, challengeAccountMax: 5, verifyAccountMax: 10 },
       donation: { windowMs: 60_000, ipMax: 60, accountMax: 20 },
       magicLink: { windowMs: 900_000, ipMax: 30, accountMax: 5 },
+      health: { windowMs: 60_000, ipMax: 60 },
     });
   });
 
