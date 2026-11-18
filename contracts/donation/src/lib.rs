@@ -164,6 +164,16 @@ pub struct GoalUpdatedEvent {
 pub enum ChargeError {
     InsufficientAllowance = 1,
     InsufficientBalance = 2,
+    /// The subscription's token was removed from the allowlist (#465) since
+    /// the subscription was created, or was never re-validated. An emergency
+    /// token removal must stop an existing recurring charge, not just block
+    /// new `subscribe`/`donate` calls.
+    TokenNotAllowed = 3,
+    /// The subscription's amount no longer satisfies the current min/max
+    /// donation bounds (#465). This can only happen if the bounds were
+    /// tightened after the subscription was created — `subscribe` itself
+    /// rejects an out-of-bounds amount up front.
+    AmountOutOfBounds = 4,
 }
 
 #[contracterror]
@@ -732,6 +742,18 @@ impl DonationContract {
     /// Admin-gated: removes a token address from the allowlist. Direct calls
     /// only work on a single-admin (threshold == 1) deployment — see
     /// `require_single_admin_mode`; otherwise propose `RemoveAllowedToken`.
+    ///
+    /// # Effect on existing subscriptions (#465)
+    ///
+    /// This is an emergency control, so it takes effect immediately for
+    /// every existing subscription in `token`, not just new `subscribe`
+    /// calls: the next `charge_subscription` for any such subscription fails
+    /// with `ChargeError::TokenNotAllowed` instead of silently going through.
+    /// The subscription itself is left `active` (not auto-cancelled) — it
+    /// simply cannot be charged again until the token is re-added or the
+    /// supporter calls `cancel_subscription`. This mirrors `donate`'s own
+    /// enforcement: removal is a hard stop, not a one-time gate checked only
+    /// at creation.
     pub fn remove_allowed_token(env: Env, token: Address) {
         Self::require_single_admin_mode(
             &env,
@@ -769,6 +791,17 @@ impl DonationContract {
     /// disable). Direct calls only work on a single-admin (threshold == 1)
     /// deployment — see `require_single_admin_mode`; otherwise propose
     /// `SetMinDonation`.
+    ///
+    /// # Effect on existing subscriptions (#465)
+    ///
+    /// Tightening this bound above an existing subscription's amount makes
+    /// its next `charge_subscription` fail with
+    /// `ChargeError::AmountOutOfBounds`, the same hard-stop behavior as
+    /// `remove_allowed_token` above. The subscription stays `active`; it
+    /// simply cannot charge again until the bound is relaxed or the
+    /// supporter cancels. `subscribe` itself already rejects a new
+    /// subscription below the current minimum, so this only matters for
+    /// subscriptions created before the bound was raised.
     pub fn set_min_donation(env: Env, min_amount: i128) {
         Self::require_single_admin_mode(
             &env,
@@ -786,6 +819,13 @@ impl DonationContract {
     /// (0 to disable). Direct calls only work on a single-admin
     /// (threshold == 1) deployment — see `require_single_admin_mode`;
     /// otherwise propose `SetMaxDonation`.
+    ///
+    /// # Effect on existing subscriptions (#465)
+    ///
+    /// Same as `set_min_donation` above, mirrored for the upper bound:
+    /// lowering this below an existing subscription's amount makes its next
+    /// `charge_subscription` fail with `ChargeError::AmountOutOfBounds`
+    /// rather than auto-cancelling it.
     pub fn set_max_donation(env: Env, max_amount: i128) {
         Self::require_single_admin_mode(
             &env,
@@ -956,6 +996,19 @@ impl DonationContract {
         if interval_secs == 0 {
             soroban_sdk::panic_with_error!(&env, DonationError::InvalidInterval);
         }
+
+        // Same min/max donation guardrails `donate` enforces (#465) — a
+        // recurring pledge must not be able to start below the minimum or
+        // above the maximum any more than a one-off donation can.
+        let min_amount: i128 = env.storage().instance().get(&MIN_DONATION_KEY).unwrap_or(0);
+        if min_amount > 0 && amount < min_amount {
+            soroban_sdk::panic_with_error!(&env, DonationError::AmountTooLow);
+        }
+        let max_amount: i128 = env.storage().instance().get(&MAX_DONATION_KEY).unwrap_or(0);
+        if max_amount > 0 && amount > max_amount {
+            soroban_sdk::panic_with_error!(&env, DonationError::AmountTooHigh);
+        }
+
         if !Self::is_token_allowed(env.clone(), token.clone()) {
             soroban_sdk::panic_with_error!(&env, DonationError::TokenNotAllowed);
         }
@@ -1059,6 +1112,37 @@ impl DonationContract {
         let now = env.ledger().timestamp();
         if now < subscription.next_charge_at {
             soroban_sdk::panic_with_error!(&env, DonationError::NotDue);
+        }
+
+        // Re-validate the guardrails `subscribe` checked at creation time
+        // (#465): an emergency token removal, or a tightened min/max bound,
+        // must stop every future charge of an existing subscription, not
+        // just block brand new `subscribe` calls. A subscription created
+        // while its amount and token were valid can otherwise keep bypassing
+        // whatever changed since.
+        if !Self::is_token_allowed(env.clone(), subscription.token.clone()) {
+            SubscriptionChargeFailedEvent {
+                supporter: subscription.supporter.clone(),
+                creator: subscription.creator.clone(),
+                subscription_id,
+                reason: ChargeError::TokenNotAllowed,
+            }
+            .publish(&env);
+            return Err(ChargeError::TokenNotAllowed);
+        }
+        let min_amount: i128 = env.storage().instance().get(&MIN_DONATION_KEY).unwrap_or(0);
+        let max_amount: i128 = env.storage().instance().get(&MAX_DONATION_KEY).unwrap_or(0);
+        let below_min = min_amount > 0 && subscription.amount < min_amount;
+        let above_max = max_amount > 0 && subscription.amount > max_amount;
+        if below_min || above_max {
+            SubscriptionChargeFailedEvent {
+                supporter: subscription.supporter.clone(),
+                creator: subscription.creator.clone(),
+                subscription_id,
+                reason: ChargeError::AmountOutOfBounds,
+            }
+            .publish(&env);
+            return Err(ChargeError::AmountOutOfBounds);
         }
 
         let token_client = token::Client::new(&env, &subscription.token);
@@ -1926,6 +2010,8 @@ mod tests {
         // pins them down as a regression guard.
         assert_eq!(ChargeError::InsufficientAllowance as u32, 1);
         assert_eq!(ChargeError::InsufficientBalance as u32, 2);
+        assert_eq!(ChargeError::TokenNotAllowed as u32, 3);
+        assert_eq!(ChargeError::AmountOutOfBounds as u32, 4);
     }
 
     #[test]
@@ -2159,6 +2245,198 @@ mod tests {
             res.unwrap_err().unwrap(),
             DonationError::InvalidInterval.into()
         );
+    }
+
+    // ── #465: subscribe/charge_subscription guardrail parity with donate ──
+
+    #[test]
+    fn test_subscribe_rejects_amount_below_min_donation() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (admin, donation_client, _registry_client) = setup(&env);
+        let token_address = create_token_contract(&env, &admin);
+        donation_client.add_allowed_token(&token_address);
+        donation_client.set_min_donation(&200);
+
+        let res = donation_client.try_subscribe(
+            &Address::generate(&env),
+            &Address::generate(&env),
+            &token_address,
+            &100,
+            &1_000,
+        );
+        assert_eq!(
+            res.unwrap_err().unwrap(),
+            DonationError::AmountTooLow.into()
+        );
+    }
+
+    #[test]
+    fn test_subscribe_rejects_amount_above_max_donation() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (admin, donation_client, _registry_client) = setup(&env);
+        let token_address = create_token_contract(&env, &admin);
+        donation_client.add_allowed_token(&token_address);
+        donation_client.set_max_donation(&100);
+
+        let res = donation_client.try_subscribe(
+            &Address::generate(&env),
+            &Address::generate(&env),
+            &token_address,
+            &500,
+            &1_000,
+        );
+        assert_eq!(
+            res.unwrap_err().unwrap(),
+            DonationError::AmountTooHigh.into()
+        );
+    }
+
+    #[test]
+    fn test_subscribe_allows_amount_within_min_max_bounds() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (admin, donation_client, _registry_client) = setup(&env);
+        let token_address = create_token_contract(&env, &admin);
+        donation_client.add_allowed_token(&token_address);
+        donation_client.set_min_donation(&100);
+        donation_client.set_max_donation(&1_000);
+
+        let id = donation_client.subscribe(
+            &Address::generate(&env),
+            &Address::generate(&env),
+            &token_address,
+            &500,
+            &1_000,
+        );
+        let subscription = donation_client.get_subscription(&id).unwrap();
+        assert_eq!(subscription.amount, 500);
+    }
+
+    #[test]
+    fn test_charge_subscription_fails_after_token_removed_from_allowlist() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (admin, donation_client, _registry_client) = setup(&env);
+
+        let supporter = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let executor = Address::generate(&env);
+        let token_address = create_token_contract(&env, &admin);
+        donation_client.add_allowed_token(&token_address);
+        StellarAssetClient::new(&env, &token_address).mint(&supporter, &10_000);
+
+        env.ledger().with_mut(|li| li.timestamp = 1_000);
+        donation_client.set_executor(&executor);
+        let id = donation_client.subscribe(&supporter, &creator, &token_address, &500, &1_000);
+
+        let token_client = token::Client::new(&env, &token_address);
+        token_client.approve(&supporter, &donation_client.address, &500, &1_000);
+
+        // Emergency removal happens AFTER the subscription was created with
+        // a then-valid token.
+        donation_client.remove_allowed_token(&token_address);
+
+        env.ledger().with_mut(|li| li.timestamp = 2_000);
+        let result = donation_client.try_charge_subscription(&executor, &id);
+        assert_eq!(result.unwrap_err().unwrap(), ChargeError::TokenNotAllowed);
+
+        // The subscription itself is left active (not auto-cancelled), and
+        // no funds moved.
+        let subscription = donation_client.get_subscription(&id).unwrap();
+        assert!(subscription.active);
+        assert_eq!(token_client.balance(&supporter), 10_000);
+        assert_eq!(token_client.balance(&creator), 0);
+    }
+
+    #[test]
+    fn test_charge_subscription_fails_when_amount_falls_below_tightened_min() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (admin, donation_client, _registry_client) = setup(&env);
+
+        let supporter = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let executor = Address::generate(&env);
+        let token_address = create_token_contract(&env, &admin);
+        donation_client.add_allowed_token(&token_address);
+        StellarAssetClient::new(&env, &token_address).mint(&supporter, &10_000);
+
+        env.ledger().with_mut(|li| li.timestamp = 1_000);
+        donation_client.set_executor(&executor);
+        // Valid at creation time: no min set yet.
+        let id = donation_client.subscribe(&supporter, &creator, &token_address, &500, &1_000);
+
+        let token_client = token::Client::new(&env, &token_address);
+        token_client.approve(&supporter, &donation_client.address, &500, &1_000);
+
+        // Admin raises the minimum above this subscription's amount.
+        donation_client.set_min_donation(&600);
+
+        env.ledger().with_mut(|li| li.timestamp = 2_000);
+        let result = donation_client.try_charge_subscription(&executor, &id);
+        assert_eq!(result.unwrap_err().unwrap(), ChargeError::AmountOutOfBounds);
+    }
+
+    #[test]
+    fn test_charge_subscription_fails_when_amount_exceeds_tightened_max() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (admin, donation_client, _registry_client) = setup(&env);
+
+        let supporter = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let executor = Address::generate(&env);
+        let token_address = create_token_contract(&env, &admin);
+        donation_client.add_allowed_token(&token_address);
+        StellarAssetClient::new(&env, &token_address).mint(&supporter, &10_000);
+
+        env.ledger().with_mut(|li| li.timestamp = 1_000);
+        donation_client.set_executor(&executor);
+        let id = donation_client.subscribe(&supporter, &creator, &token_address, &500, &1_000);
+
+        let token_client = token::Client::new(&env, &token_address);
+        token_client.approve(&supporter, &donation_client.address, &500, &1_000);
+
+        // Admin lowers the maximum below this subscription's amount.
+        donation_client.set_max_donation(&400);
+
+        env.ledger().with_mut(|li| li.timestamp = 2_000);
+        let result = donation_client.try_charge_subscription(&executor, &id);
+        assert_eq!(result.unwrap_err().unwrap(), ChargeError::AmountOutOfBounds);
+    }
+
+    #[test]
+    fn test_charge_subscription_succeeds_when_still_within_bounds_and_allowed() {
+        // Regression guard: the new guardrail re-checks in
+        // charge_subscription must not break the ordinary, unmodified-limits
+        // charge path already covered by
+        // test_charge_subscription_draws_allowance_and_updates_registry.
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (admin, donation_client, _registry_client) = setup(&env);
+
+        let supporter = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let executor = Address::generate(&env);
+        let token_address = create_token_contract(&env, &admin);
+        donation_client.add_allowed_token(&token_address);
+        StellarAssetClient::new(&env, &token_address).mint(&supporter, &10_000);
+        donation_client.set_min_donation(&100);
+        donation_client.set_max_donation(&1_000);
+
+        env.ledger().with_mut(|li| li.timestamp = 1_000);
+        donation_client.set_executor(&executor);
+        let id = donation_client.subscribe(&supporter, &creator, &token_address, &500, &1_000);
+
+        let token_client = token::Client::new(&env, &token_address);
+        token_client.approve(&supporter, &donation_client.address, &500, &1_000);
+
+        env.ledger().with_mut(|li| li.timestamp = 2_000);
+        let donation = donation_client.charge_subscription(&executor, &id);
+        assert_eq!(donation.amount, 500);
+        assert_eq!(token_client.balance(&creator), 500);
     }
 
     #[test]
