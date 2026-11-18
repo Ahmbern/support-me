@@ -2,11 +2,11 @@ import { Prisma, Goal, RecurrenceInterval } from "@prisma/client";
 import prisma from "../prisma";
 import { toAmount, MoneyValue } from "../lib/money";
 
-export function formatGoalAmounts<T extends { targetAmount?: any; currentAmount?: any }>(goal: T): T {
+export function formatGoalAmounts<T extends { targetAmount?: unknown; currentAmount?: unknown }>(goal: T): T {
   return {
     ...goal,
-    ...(goal.targetAmount !== undefined ? { targetAmount: toAmount(goal.targetAmount) } : {}),
-    ...(goal.currentAmount !== undefined ? { currentAmount: toAmount(goal.currentAmount) } : {}),
+    ...(goal.targetAmount !== undefined ? { targetAmount: toAmount(goal.targetAmount as MoneyValue) } : {}),
+    ...(goal.currentAmount !== undefined ? { currentAmount: toAmount(goal.currentAmount as MoneyValue) } : {}),
   };
 }
 
