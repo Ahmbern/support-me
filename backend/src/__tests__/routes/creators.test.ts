@@ -193,6 +193,22 @@ describe("POST /api/creators/:username/create", () => {
     expect(res.body.code).toBe("CONFLICT");
   });
 
+  // #387: a reserved name is rejected before the database is ever touched,
+  // since the static frontend route at that path would always win anyway.
+  it.each(["admin", "settings", "dashboard", "support", "Admin", "SETTINGS"])(
+    "rejects the reserved username %s",
+    async (username) => {
+      const res = await request(app)
+        .post(`/api/creators/${username}/create`)
+        .set("Authorization", `Bearer ${token}`)
+        .send({});
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe("VALIDATION_ERROR");
+      expect(mockedPrisma.creator.findUnique).not.toHaveBeenCalled();
+    }
+  );
+
   it("returns 409 when the authenticated user already has a profile", async () => {
     mockedPrisma.creator.findUnique
       .mockResolvedValueOnce(null) // username lookup
