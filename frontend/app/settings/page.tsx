@@ -84,10 +84,23 @@ export default function SettingsPage() {
   const [deletingGoal, setDeletingGoal] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Tracks which creator.id the form was last hydrated from, so a refetch
+  // of the SAME creator (e.g. invalidate() after a goal action, or a
+  // session/token sync) doesn't re-run hydration and discard an in-progress
+  // edit. null means "never hydrated yet".
+  const hydratedCreatorIdRef = useRef<number | null>(null);
 
-  // Populate form fields from the shared creator data
+  // Populate form fields from the shared creator data. Only runs on first
+  // load, when the creator identity actually changes (a different account),
+  // or when the form has no unsaved edits — never while `dirty` is true for
+  // the same creator, since CreatorContext replaces `creator` with a new
+  // object on every refetch and that would otherwise silently overwrite
+  // whatever the user is typing.
   useEffect(() => {
     if (!creator) return;
+    const isDifferentCreator = hydratedCreatorIdRef.current !== creator.id;
+    if (!isDifferentCreator && dirty) return;
+
     setDisplayName(creator.displayName || '');
     setBio(creator.bio || '');
     setAvatarUrl(creator.avatarUrl || '');
@@ -99,8 +112,16 @@ export default function SettingsPage() {
       creator.presetAmounts && creator.presetAmounts.length > 0 ? creator.presetAmounts.join(', ') : ''
     );
     setSocials(creator.socialLinks || {});
+    hydratedCreatorIdRef.current = creator.id;
+  }, [creator, dirty]);
+
+  // Goal fetching is independent of form hydration: it should run whenever
+  // the creator identity changes, regardless of whether the settings form
+  // itself has unsaved edits.
+  useEffect(() => {
+    if (!creator) return;
     fetchGoals(creator.username);
-  }, [creator]);
+  }, [creator?.username]);
 
   // Goals endpoint is public (GET /api/goals/:username), keyed by username
   // rather than needing auth — only create/edit require the owner's token.
