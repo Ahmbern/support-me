@@ -58,6 +58,7 @@ function SubscriptionsList() {
       .then((res) => {
         if (res.status === 401) {
           const authErr = new Error('Session expired, sign in again');
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           (authErr as any).isAuthError = true;
           throw authErr;
         }
