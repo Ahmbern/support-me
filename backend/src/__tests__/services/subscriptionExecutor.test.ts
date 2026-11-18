@@ -228,6 +228,18 @@ describe("decodeChargeErrorReason (#283)", () => {
   it("returns undefined for an unrecognized contract error code", () => {
     expect(decodeChargeErrorReason("Error(Contract, #99)")).toBeUndefined();
   });
+
+  it("maps contract error code #3 to TokenNotAllowed (#465)", () => {
+    expect(decodeChargeErrorReason("Error(Contract, #3)")).toBe(
+      SubscriptionChargeErrorReason.TokenNotAllowed
+    );
+  });
+
+  it("maps contract error code #4 to AmountOutOfBounds (#465)", () => {
+    expect(decodeChargeErrorReason("Error(Contract, #4)")).toBe(
+      SubscriptionChargeErrorReason.AmountOutOfBounds
+    );
+  });
 });
 
 describe("parseLastErrorReason (#283)", () => {
@@ -242,6 +254,15 @@ describe("parseLastErrorReason (#283)", () => {
 
   it("returns undefined for a plain, undecorated lastError", () => {
     expect(parseLastErrorReason("Transaction abc failed on-chain")).toBeUndefined();
+  });
+
+  it("recovers the new #465 guardrail reasons too", () => {
+    expect(
+      parseLastErrorReason("TokenNotAllowed: Transaction abc failed on-chain")
+    ).toBe(SubscriptionChargeErrorReason.TokenNotAllowed);
+    expect(
+      parseLastErrorReason("AmountOutOfBounds: Transaction abc failed on-chain")
+    ).toBe(SubscriptionChargeErrorReason.AmountOutOfBounds);
   });
 
   it("returns undefined for null/undefined", () => {
