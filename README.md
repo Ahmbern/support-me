@@ -726,7 +726,7 @@ Key entry points:
 
 ## License
 
-MIT
+[MIT](LICENSE)
 
 ## Support
 
