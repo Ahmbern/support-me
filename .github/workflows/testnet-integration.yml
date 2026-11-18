@@ -27,7 +27,7 @@ jobs:
 
       - name: Install Stellar CLI
         run: |
-          cargo install --locked stellar-cli --features opt
+          cargo install --locked stellar-cli
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
