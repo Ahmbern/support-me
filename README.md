@@ -616,33 +616,45 @@ Each part of the stack has its own test suite:
 # Smart contracts (Rust unit + cross-contract integration tests)
 cargo test --workspace
 
-# Backend (Jest + Supertest, Prisma is mocked so no database is needed)
+# Backend unit tests (Jest + Supertest, Prisma is mocked so no database is needed)
 cd backend
 npm test
 
-# Frontend (Vitest + React Testing Library)
+# Backend Postgres integration tests (requires a reachable DATABASE_URL, migrations applied)
+npm run test:integration
+
+# Frontend unit tests (Vitest + React Testing Library)
 cd frontend
 npm test
+
+# Frontend E2E tests (Playwright, requires browsers via `npx playwright install`)
+npm run test:e2e
 ```
 
 ## CI/CD
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs independent jobs on every push and pull request to `main`, tied together by a single required `test-all` status check:
 
+- **Check .env.example drift**: Verifies `frontend/.env.example` and `backend/.env.example` reference
+  the same shared contract IDs.
 - **Contracts**: `cargo fmt --all -- --check`, `cargo test --workspace` for all three crates,
   `cargo clippy --workspace --all-targets -- -D warnings`, then a release build to
   `wasm32v1-none` to confirm both contracts still compile to WASM.
-- **Backend**: `npm run lint` (ESLint, flat config), `npm run build` (Prisma client generation + `tsc`), then
-  `npm test`.
-- **Frontend**: `npx tsc --noEmit`, `npm run lint` (ESLint, flat config), then `npm test`, then `npm run build`.
+- **Backend**: `npm run lint` (ESLint, flat config), `npm run build` (Prisma client generation + `tsc`),
+  applies migrations against a real Postgres service container, checks for migration/schema drift,
+  seeds demo data twice to smoke-test seed idempotency, then runs `npm test` (mocked-Prisma Jest
+  suite) and `npm run test:integration` (tests against the live Postgres service).
+- **Frontend**: `npx tsc --noEmit`, a translation message key parity check (`npm run check:i18n`),
+  `npm run lint` (ESLint, flat config), `npm test`, then `npm run build`.
+- **Frontend E2E**: Installs Playwright's Chromium browser and runs `npm run test:e2e` against the app;
+  uploads the Playwright report as a build artifact.
 - **Dependency Review**: On pull requests, GitHub's Dependency Review Action fails the check if the
   dependency changes in that PR introduce a new high-severity (or above) vulnerability; it does not
   re-flag vulnerabilities that already exist in `main`'s dependency tree.
 - **Type Drift**: Verifies that changes to shared contract types (`contracts/common/src/lib.rs`) are accompanied by frontend TypeScript updates.
 - **All tests passed**: A single job depending on all the above to provide a unified 'all green' status for branch protection.
-  None of the jobs require real secrets or a live database — backend tests
-  mock Prisma, and the Prisma client can be generated from `schema.prisma`
-  without a reachable `DATABASE_URL`.
+  The backend job does use a live Postgres service container (for migrations and integration tests),
+  but no job requires real secrets — all credentials are the service container's local defaults.
 
 [`.github/dependabot.yml`](.github/dependabot.yml) opens weekly update pull requests for npm in
 `frontend/` and `backend/`, the root Cargo workspace, and the GitHub Actions workflows themselves;

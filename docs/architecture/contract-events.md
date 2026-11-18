@@ -43,12 +43,15 @@ Emitted by `DonationContract::donate` and `DonationContract::charge_subscription
 - **Value Schema**:
   ```rust
   pub struct DonatedEvent {
-      pub donor: Address,      // [topic]
-      pub creator: Address,    // [topic]
-      pub token: Address,      // SAC address of donated token (e.g. native XLM or USDC)
-      pub amount: i128,        // Amount transferred in atomic units / stroops
-      pub memo: String,        // Donor memo or "recurring"
-      pub timestamp: u64,      // Ledger timestamp
+      pub donor: Address,                  // [topic]
+      pub creator: Address,                // [topic]
+      pub donation_id: u32,                // Per-contract donation counter
+      pub token: Address,                  // SAC address of donated token (e.g. native XLM or USDC)
+      pub amount: i128,                    // Net amount transferred to the creator, in atomic units / stroops
+      pub fee_amount: i128,                // Protocol fee withheld from the gross donation, in atomic units
+      pub memo: String,                    // Donor memo or "recurring"
+      pub timestamp: u64,                  // Ledger timestamp
+      pub subscription_id: Option<u64>,    // Set when this donation was a recurring charge, else None
   }
   ```
 - **Indexing & Filtering**:
