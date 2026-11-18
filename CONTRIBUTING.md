@@ -103,6 +103,10 @@ required environment variables, and curl walkthroughs.
 - Keep the README Roadmap checklist accurate as features ship.
 - Design new UI areas (widgets, themes, …) in `docs/design/` before implementing them.
 - Avoid adding contract complexity unless it is required by the feature.
+- Keep one-off scratch scripts (e.g. a throwaway script used once to resolve
+  a merge conflict) out of the repo root, and out of the commit entirely once
+  they've served their purpose. Run them from a local, gitignored scratch
+  directory instead.
 
 ## Dependency Updates
 
