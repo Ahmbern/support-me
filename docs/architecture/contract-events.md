@@ -10,6 +10,8 @@ Historically, off-chain backend systems had to periodically poll contract state 
 
 SupportMe contracts now emit self-contained events for all key on-chain state mutations. Every event payload carries sufficient contextual data (including involved parties, token asset address, amounts, and schedule timestamps) so that indexers, listeners, and backend services can reconcile off-chain database state without making follow-up RPC queries.
 
+Between the two contracts there are 16 distinct event topics (§2). The backend's `SorobanEventListener` only reconciles the six that have a corresponding row to update in Postgres — `donated`, `subscribed`, `sub_cancelled`, `goal_upd`, `sub_failed`, and `don_rec` (§3). The remaining ten — creator registration and the admin-governance/guardrail topics — are emitted for on-chain transparency and external indexers; the listener's `processEvent` switch has no case for them and its `default` branch returns `false` without writing to the database.
+
 ```
 +---------------------+           +------------------------+
 |   Stellar Network   |           |  SorobanEventListener  |
@@ -146,6 +148,153 @@ Emitted by `CreatorRegistryContract::register_creator` when a creator signs up.
 
 ---
 
+### 2.7. `SubscriptionChargeFailedEvent`
+Emitted by `DonationContract::charge_subscription` when a scheduled recurring charge fails (insufficient allowance or balance), instead of silently skipping the subscription.
+
+- **Topic Schema**: `["sub_failed", supporter: Address, creator: Address]`
+- **Value Schema**:
+  ```rust
+  pub struct SubscriptionChargeFailedEvent {
+      #[topic]
+      pub supporter: Address,       // Supporter wallet address
+      #[topic]
+      pub creator: Address,         // Creator wallet address
+      pub subscription_id: u64,     // ID of the subscription that failed to charge
+      pub reason: ChargeError,      // InsufficientAllowance | InsufficientBalance
+  }
+  ```
+- **Indexing & Filtering**:
+  Indexed by `supporter` and `creator`. Lets the backend record *why* a charge failed on the `Subscription` row without needing to re-derive it from RPC simulation.
+
+---
+
+### Admin Governance Events (`creator-registry` and `donation`)
+
+Both contracts share an identical multi-signature/timelock proposal lifecycle (see `common::AdminProposal`) and emit the same four topics with the same payload shape. The `proposal_id` counter, and the set of actions a proposal may carry out, are local to whichever contract emitted the event — a `donation` proposal with `proposal_id = 3` is unrelated to a `creator-registry` proposal with the same ID.
+
+#### 2.8. `ProposalCreatedEvent`
+Emitted when an admin proposes a high-risk administrative action (e.g. rotating admins, changing the signer threshold, repointing the donation contract).
+
+- **Topic Schema**: `["prop_created", proposer: Address]`
+- **Value Schema**:
+  ```rust
+  pub struct ProposalCreatedEvent {
+      pub proposal_id: u64,   // Newly created proposal's ID
+      #[topic]
+      pub proposer: Address,  // Admin who created the proposal
+      pub eta: u64,            // Ledger timestamp after which the proposal becomes executable
+  }
+  ```
+
+#### 2.9. `ProposalApprovedEvent`
+Emitted each time an admin approves a pending proposal.
+
+- **Topic Schema**: `["prop_approved", admin: Address]`
+- **Value Schema**:
+  ```rust
+  pub struct ProposalApprovedEvent {
+      pub proposal_id: u64,
+      #[topic]
+      pub admin: Address,          // Admin who approved
+      pub approvals_count: u32,    // Running total of approvals on this proposal
+  }
+  ```
+
+#### 2.10. `ProposalExecutedEvent`
+Emitted once a proposal has enough approvals and its timelock has elapsed, after its action has been applied.
+
+- **Topic Schema**: `["prop_exec", executor: Address]`
+- **Value Schema**:
+  ```rust
+  pub struct ProposalExecutedEvent {
+      pub proposal_id: u64,
+      #[topic]
+      pub executor: Address,   // Caller that triggered execution
+  }
+  ```
+
+#### 2.11. `ProposalCancelledEvent`
+Emitted when a proposal is cancelled, either unilaterally by its proposer or after `threshold` current admins request cancellation.
+
+- **Topic Schema**: `["prop_cancelled", cancelled_by: Address]`
+- **Value Schema**:
+  ```rust
+  pub struct ProposalCancelledEvent {
+      pub proposal_id: u64,
+      #[topic]
+      pub cancelled_by: Address,
+  }
+  ```
+
+---
+
+### Donation Guardrail Events (`donation` contract only)
+
+Emitted whenever an admin changes one of the donation contract's operational guardrails, whether through a multisig-approved `AdminAction` or (where one still exists) the single-admin legacy shortcut.
+
+#### 2.12. `AllowedTokenChangedEvent`
+Emitted whenever a token is added to or removed from the donation allowlist.
+
+- **Topic Schema**: `["allow_tok", token: Address]`
+- **Value Schema**:
+  ```rust
+  pub struct AllowedTokenChangedEvent {
+      #[topic]
+      pub token: Address,   // SAC address whose allowlist status changed
+      pub allowed: bool,    // true if newly allowed, false if newly disallowed
+  }
+  ```
+
+#### 2.13. `MinDonationChangedEvent`
+Emitted whenever the minimum donation amount guardrail changes.
+
+- **Topic Schema**: `["min_don"]` (no topic fields)
+- **Value Schema**:
+  ```rust
+  pub struct MinDonationChangedEvent {
+      pub old_min: i128,
+      pub new_min: i128,
+  }
+  ```
+
+#### 2.14. `MaxDonationChangedEvent`
+Emitted whenever the maximum donation amount guardrail changes.
+
+- **Topic Schema**: `["max_don"]` (no topic fields)
+- **Value Schema**:
+  ```rust
+  pub struct MaxDonationChangedEvent {
+      pub old_max: i128,
+      pub new_max: i128,
+  }
+  ```
+
+#### 2.15. `PauseChangedEvent`
+Emitted whenever the contract is paused or unpaused — covers both the instant `emergency_pause` shortcut and the multisig `Pause`/`Unpause` `AdminAction`s.
+
+- **Topic Schema**: `["pause_chg"]` (no topic fields)
+- **Value Schema**:
+  ```rust
+  pub struct PauseChangedEvent {
+      pub paused: bool,
+  }
+  ```
+
+#### 2.16. `ExecutorChangedEvent`
+Emitted whenever the address authorized to call `charge_subscription` changes, whether via the multisig `SetExecutor` action or the single-admin legacy `set_executor` shortcut. `old_executor` is `None` the first time an executor is ever set.
+
+- **Topic Schema**: `["exec_chg", new_executor: Address]`
+- **Value Schema**:
+  ```rust
+  pub struct ExecutorChangedEvent {
+      pub old_executor: Option<Address>,
+      #[topic]
+      pub new_executor: Address,
+  }
+  ```
+
+---
+
 ## 3. Backend Event Consumption & Reconciliation
 
 The backend's `SorobanEventListener` (`backend/src/services/sorobanEventListener.ts`) consumes these events using Soroban RPC cursor pagination.
@@ -190,5 +339,23 @@ Rows may exist in two states:
 
 The verification flip is a conditional `updateMany({ where: { verified: false } })`, so a replayed lookback after a restart — or a concurrent client report — is a no-op rather than a double-count. Donations made entirely on-chain (with no client report) are created directly in the verified state.
 
-### 3.4. Real-Time Dashboard Updates (SSE)
+### 3.4. Recording Subscription Charge Failures
+When a scheduled recurring charge fails on-chain, the listener receives `SubscriptionChargeFailedEvent` and persists the decoded failure reason onto the subscription so the backend (and anything reading `Subscription.lastError`) can tell an allowance problem from a balance problem, without the executor having to be the one that observed the failure — the executor's own tick may be lagging, or the charge may have failed from a path other than this backend's executor key:
+
+```typescript
+case "sub_failed": {
+  const reason = normalizeChargeErrorReason(value.reason);
+  eventBus.emit(SUBSCRIPTION_CHARGE_FAILED_EVENT, payload);
+
+  await prisma.subscription.updateMany({
+    where: { onChainId: subId },
+    data: { lastError: `${reason}: on-chain charge failed (${evt.txHash})` },
+  });
+}
+```
+
+### 3.5. Unreconciled Events: Creator Registration and Admin Governance/Guardrails
+`created`, the four proposal-lifecycle topics (`prop_created`, `prop_approved`, `prop_exec`, `prop_cancelled`), and the five guardrail-change topics (`allow_tok`, `min_don`, `max_don`, `pause_chg`, `exec_chg`) are emitted on-chain but have no corresponding `case` in `processEvent`'s `switch` — they fall through to `default` and are neither published on `eventBus` nor written to Postgres. There is no `AdminProposal` table in `schema.prisma`, so that state currently has no off-chain home to reconcile into; a creator's registration is instead captured by the backend's own `POST`-time username write, not by observing `created`.
+
+### 3.6. Real-Time Dashboard Updates (SSE)
 All processed events are published onto `eventBus` and broadcast via Server-Sent Events at `GET /api/events` to any open creator dashboards or activity monitors.
