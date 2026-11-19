@@ -1,4 +1,5 @@
-import express from "express";
+import express, { type Request } from "express";
+import { timingSafeEqual } from "crypto";
 import cors from "cors";
 import * as Sentry from "@sentry/node";
 import authRouter from "./routes/auth";
@@ -94,12 +95,37 @@ app.use(express.json());
 // SEO routes (standard paths: /sitemap.xml, /robots.txt)
 app.use("/", seoRouter);
 
-// Cheap liveness probe that never touches dependencies (#373)
-app.get("/health/live", (_req, res) => {
+/**
+ * Detailed health reports expose operator-only data: executor balances,
+ * raw charge/error strings and subscription ids, the listener cursor and the
+ * network reset reason. Health probes are usually hit by monitors with no user
+ * session, so the admin credential here is a shared secret header rather than
+ * a JWT. Fail-closed: with no secret configured the detail is never served and
+ * every caller receives only the aggregate status (#440).
+ */
+function hasHealthDetailAccess(req: Request): boolean {
+  const expected = process.env.HEALTH_DETAIL_SECRET;
+  if (!expected) return false;
+  const provided = req.get("X-Health-Detail-Key");
+  if (!provided) return false;
+  const expectedBuf = Buffer.from(expected, "utf8");
+  const providedBuf = Buffer.from(provided, "utf8");
+  return (
+    expectedBuf.length === providedBuf.length && timingSafeEqual(expectedBuf, providedBuf)
+  );
+}
+
+// One rate limiter shared by every health route, so probing any of them
+// consumes the same per-IP budget (#440).
+const healthRateLimit = rateLimit(healthIpLimiter, clientIp, "health probe");
+
+// Cheap liveness probe that never touches dependencies (#373). Rate limited
+// like the other health routes (#440).
+app.get("/health/live", healthRateLimit, (_req, res) => {
   return res.json({ status: "ok" });
 });
 
-app.get("/health", rateLimit(healthIpLimiter, clientIp, "health probe"), async (req, res) => {
+app.get("/health", healthRateLimit, async (req, res) => {
   const sorobanRpc = await sorobanRpcCache.getOrSet("rpc", () => checkSorobanRpc());
   const subscriptionExecutor = executorHealth.getHealth();
   const eventListener = eventListenerHealth.getHealth();
@@ -123,6 +149,9 @@ app.get("/health", rateLimit(healthIpLimiter, clientIp, "health probe"), async (
           : eventListener.gapDetected
             ? "degraded"
             : "ok";
+  // Public liveness stays minimal. The dependency breakdown (including the
+  // listener cursor and reset reason) is only for authorized operators (#440).
+  if (!hasHealthDetailAccess(req)) return res.json({ status });
   return res.json({
     status,
     timestamp: new Date().toISOString(),
@@ -131,10 +160,14 @@ app.get("/health", rateLimit(healthIpLimiter, clientIp, "health probe"), async (
   });
 });
 
-app.get("/health/executor", (req, res) => {
+app.get("/health/executor", healthRateLimit, (req, res) => {
   const subscriptionExecutor = executorHealth.getHealth();
+  const status = subscriptionExecutor.status === "unhealthy" ? "unhealthy" : "ok";
+  // Unauthenticated callers get only the aggregate status. Balances, error
+  // strings and subscription ids require the operator detail secret (#440).
+  if (!hasHealthDetailAccess(req)) return res.json({ status });
   return res.json({
-    status: subscriptionExecutor.status === "unhealthy" ? "unhealthy" : "ok",
+    status,
     timestamp: new Date().toISOString(),
     subscriptionExecutor,
   });
