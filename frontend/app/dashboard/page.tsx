@@ -535,7 +535,7 @@ export default function DashboardPage() {
                             target="_blank"
                             rel="noopener noreferrer"
                             title="View transaction on Stellar Expert"
-                            className="block -mx-2 px-2 rounded hover:bg-accent-bg focus:bg-accent-bg focus:outline-none transition-colors"
+                            className="block -mx-2 px-2 rounded hover:bg-accent-bg focus:bg-accent-bg focus-visible:outline-[3px] focus-visible:outline-focus-ring focus-visible:outline-offset-2 transition-colors"
                           >
                             {row}
                           </a>
@@ -585,7 +585,7 @@ export default function DashboardPage() {
                           target="_blank"
                           rel="noopener noreferrer"
                           title="View transaction on Stellar Expert"
-                          className="block -mx-2 px-2 rounded hover:bg-accent-bg focus:bg-accent-bg focus:outline-none transition-colors"
+                          className="block -mx-2 px-2 rounded hover:bg-accent-bg focus:bg-accent-bg focus-visible:outline-[3px] focus-visible:outline-focus-ring focus-visible:outline-offset-2 transition-colors"
                         >
                           {row}
                         </a>

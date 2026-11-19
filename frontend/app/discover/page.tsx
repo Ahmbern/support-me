@@ -183,7 +183,7 @@ export default function DiscoverPage() {
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search by name or username…"
               aria-label="Search creators"
-              className="w-full card-brutal pl-10 pr-4 py-2.5 font-medium text-ink placeholder:text-ink/40 focus:outline-none"
+              className="w-full card-brutal pl-10 pr-4 py-2.5 font-medium text-ink placeholder:text-ink/40 focus-visible:outline-[3px] focus-visible:outline-focus-ring focus-visible:outline-offset-2"
             />
           </div>
           <div className="flex gap-2 shrink-0">
