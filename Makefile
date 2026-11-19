@@ -1,12 +1,17 @@
-.PHONY: all build build-contracts deploy-testnet setup-tokens check-tokens format clean
+.PHONY: all build build-contracts test lint deploy-testnet setup-tokens check-tokens format clean
 
 all: build
 
 build: build-contracts
 
 build-contracts:
-	cargo build --manifest-path contracts/creator-registry/Cargo.toml --target wasm32v1-none --release
-	cargo build --manifest-path contracts/donation/Cargo.toml --target wasm32v1-none --release
+	cargo build --workspace --target wasm32v1-none --release
+
+test:
+	cargo test --workspace
+
+lint:
+	cargo clippy --workspace --all-targets -- -D warnings
 
 deploy-testnet:
 	bash scripts/deploy-testnet.sh
@@ -19,7 +24,6 @@ check-tokens:
 
 format:
 	cargo fmt --all
-	npm run format || true
 
 clean:
 	cargo clean
