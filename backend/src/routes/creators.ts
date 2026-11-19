@@ -22,7 +22,7 @@ import {
 import { challenges } from "./auth";
 import { verifyWalletOwnership } from "../services/walletProof";
 import { TtlCache } from "../services/ttlCache";
-import { toAmount } from "../lib/money";
+import { toAmount, MoneyValue } from "../lib/money";
 import { getCreatorStats } from "../services/creatorStats";
 
 const router = Router();
@@ -32,12 +32,12 @@ const router = Router();
 // Exported so tests can reset it between cases.
 export const creatorProfileCache = new TtlCache<Creator>(5 * 60 * 1000);
 
-export function formatCreator<T extends { presetAmounts?: any }>(creator: T): T {
+export function formatCreator<T extends { presetAmounts?: unknown }>(creator: T): T {
   if (!creator) return creator;
   if (!Array.isArray(creator.presetAmounts)) return creator;
   return {
     ...creator,
-    presetAmounts: creator.presetAmounts.map((p: any) => toAmount(p)),
+    presetAmounts: creator.presetAmounts.map((p: unknown) => toAmount(p as MoneyValue)),
   };
 }
 

@@ -82,9 +82,9 @@ function applyData(row: FakeGoal, data: GoalData): void {
   if (data.currentAmount !== undefined) {
     if (typeof data.currentAmount === "object" && "increment" in data.currentAmount) {
       const inc = data.currentAmount.increment!;
-      row.currentAmount = new Prisma.Decimal(row.currentAmount).add(new Prisma.Decimal(inc)).toNumber();
+      row.currentAmount = new Prisma.Decimal(row.currentAmount).add(new Prisma.Decimal(inc as Prisma.Decimal.Value)).toNumber();
     } else {
-      row.currentAmount = new Prisma.Decimal(data.currentAmount).toNumber();
+      row.currentAmount = new Prisma.Decimal(data.currentAmount as Prisma.Decimal.Value).toNumber();
     }
   }
   if (data.status !== undefined) row.status = data.status;
@@ -484,6 +484,7 @@ describe("resetDueGoals", () => {
       },
     ]);
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let finalCompletedGoal: any = null;
     for (let i = 0; i < 10; i++) {
       const reached = await applyDonationToGoals(fakeTransactionClient(), 1, "XLM", 0.1);

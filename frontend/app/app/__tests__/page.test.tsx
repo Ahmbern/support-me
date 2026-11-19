@@ -39,6 +39,7 @@ vi.mock('@/lib/assets', async (importOriginal) => {
     getAsset: (code: string) => ({
       code,
       label: code,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       balanceMatcher: (b: any) =>
         code === 'XLM' ? b.asset_type === 'native' : b.asset_code === code,
     }),

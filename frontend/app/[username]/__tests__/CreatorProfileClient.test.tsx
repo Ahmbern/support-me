@@ -682,7 +682,7 @@ describe('CreatorProfileClient', () => {
         await waitFor(() => expect(screen.getByText('Alice')).toBeInTheDocument());
 
         expect(screen.getByRole('combobox', { name: /language/i })).toHaveAccessibleDescription(
-          /this profile and the donation form only/i
+          /this profile and the donation form/i
         );
       });
     });

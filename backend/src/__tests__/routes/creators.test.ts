@@ -147,7 +147,7 @@ describe("GET /api/creators/:username", () => {
 // registering the challenge the real /api/auth/challenge endpoint would issue.
 function proveWallet(keypair: Keypair): string {
   const message = `Sign in to SupportMe\n\nAddress: ${keypair.publicKey()}\nNonce: test-nonce\nIssued At: now`;
-  challenges.set(keypair.publicKey(), { message, expiresAt: Date.now() + 60_000 });
+  challenges.set(keypair.publicKey(), { id: "test-challenge", walletAddress: keypair.publicKey(), message, expiresAt: Date.now() + 60_000 });
   const { createHash } = jest.requireActual("crypto") as typeof import("crypto");
   const hash = createHash("sha256")
     .update(Buffer.concat([Buffer.from("Stellar Signed Message:\n"), Buffer.from(message)]))
@@ -719,7 +719,7 @@ describe("Creator wallet binding (#276)", () => {
       const victim = Keypair.random();
       const attacker = Keypair.random();
       const message = `Sign in to SupportMe\n\nAddress: ${victim.publicKey()}\nNonce: n\nIssued At: now`;
-      challenges.set(victim.publicKey(), { message, expiresAt: Date.now() + 60_000 });
+      challenges.set(victim.publicKey(), { id: "test-challenge", walletAddress: victim.publicKey(), message, expiresAt: Date.now() + 60_000 });
       const { createHash } = jest.requireActual("crypto") as typeof import("crypto");
       const hash = createHash("sha256")
         .update(Buffer.concat([Buffer.from("Stellar Signed Message:\n"), Buffer.from(message)]))

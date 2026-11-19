@@ -182,6 +182,7 @@ describe("SubscriptionExecutor executor-side failures (#279)", () => {
   });
 
   it("stores a typed InsufficientAllowance reason when the simulation error names it (#283)", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const executor = new SubscriptionExecutor() as any;
     executor.submitCharge = jest
       .fn()
@@ -195,6 +196,7 @@ describe("SubscriptionExecutor executor-side failures (#279)", () => {
   });
 
   it("stores a typed InsufficientBalance reason when the simulation error names it (#283)", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const executor = new SubscriptionExecutor() as any;
     executor.submitCharge = jest
       .fn()

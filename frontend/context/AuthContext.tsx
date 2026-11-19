@@ -57,7 +57,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const savedUser = localStorage.getItem('authUser');
       if (savedToken && savedUser) {
         try {
-          // eslint-disable-next-line react-hooks/set-state-in-effect -- restoring session state from localStorage on mount, see comment above
           setToken(savedToken);
           setUser(JSON.parse(savedUser));
         } catch {
@@ -87,6 +86,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
 
     window.addEventListener('storage', handleStorage);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- marks the one-time storage sync above as complete
     setLoading(false);
 
     return () => {

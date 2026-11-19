@@ -7,7 +7,7 @@ import { NextIntlClientProvider, useTranslations } from 'next-intl';
 import { notify } from '@/lib/notify';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { PartyIcon, TwitterIcon, LinkIcon } from '@hugeicons/core-free-icons';
-import { connectWallet, addTrustline } from '@/lib/wallet';
+import { connectWallet, addTrustline, isWalletOnTestnet } from '@/lib/wallet';
 import {
   categorizeWalletError,
   WALLET_INSTALL_LINKS,
@@ -142,6 +142,7 @@ function CreatorProfileView({ username, locale, onLocaleChange }: CreatorProfile
   const [isUnfunded, setIsUnfunded] = useState(false);
   const [funding, setFunding] = useState(false);
   const [missingTrustline, setMissingTrustline] = useState(false);
+  const [wrongNetwork, setWrongNetwork] = useState(false);
 
   const [donationAmount, setDonationAmount] = useState('5');
   const [donationMessage, setDonationMessage] = useState('');
@@ -383,6 +384,14 @@ function CreatorProfileView({ username, locale, onLocaleChange }: CreatorProfile
     }
     setWrongNetwork(false);
     return true;
+  };
+
+  // Once the wallet has been switched to Testnet, clear the notice and refresh
+  // the balance the form will show.
+  const handleRecheckNetwork = async () => {
+    if (await ensureTestnetWallet()) {
+      if (userAddress) setBalance(await loadAssetBalance(userAddress, assetCode));
+    }
   };
 
   const handleConnectWallet = async () => {
@@ -1062,9 +1071,15 @@ function CreatorProfileView({ username, locale, onLocaleChange }: CreatorProfile
                         className="input-brutal text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                         rows={3}
                       />
-                      <p className="text-xs text-muted mt-1 font-medium">
-                        {memoBytes}/{MAX_MEMO_LENGTH} bytes
-                      </p>
+                      {recurring ? (
+                        <p className="text-xs text-muted mt-1 font-medium" data-testid="recurring-message-hint">
+                          {t('recurringMessageHint')}
+                        </p>
+                      ) : (
+                        <p className="text-xs text-muted mt-1 font-medium">
+                          {memoBytes}/{MAX_MEMO_LENGTH} bytes
+                        </p>
+                      )}
                       {memoTooLong && (
                         <p role="alert" className="text-xs text-red-600 mt-1">
                           Message must be {MAX_MEMO_LENGTH} bytes or fewer.

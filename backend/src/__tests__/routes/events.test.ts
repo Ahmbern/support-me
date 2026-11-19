@@ -315,9 +315,11 @@ describe("GET /api/events", () => {
     const conn2 = await connect();
     expect(conn2.status).toBe(200);
 
-    const conn3 = await connect();
-    expect(conn3.status).toBe(429);
-    expect(conn3.headers["retry-after"]).toBe("30");
-    expect(conn3.body.code).toBe("TOO_MANY_REQUESTS");
+    // A refused request completes normally, so fetch it as a regular
+    // buffered response instead of a stream.
+    const refused = await request(app).get("/api/events").set("Accept", "text/event-stream");
+    expect(refused.status).toBe(429);
+    expect(refused.headers["retry-after"]).toBe("30");
+    expect(refused.body.code).toBe("TOO_MANY_REQUESTS");
   });
 });
