@@ -138,9 +138,9 @@ describe('AppHubPage', () => {
     await waitFor(() => {
       expect(screen.getByRole('dialog')).toBeInTheDocument();
       expect(screen.getByText('Share Profile')).toBeInTheDocument();
-      expect(screen.getByRole('tab', { name: /both/i })).toBeInTheDocument();
-      expect(screen.getByRole('tab', { name: /copy link/i })).toBeInTheDocument();
-      expect(screen.getByRole('tab', { name: /qr code/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Both' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /copy link/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /qr code/i })).toBeInTheDocument();
     });
 
     // Close the modal
