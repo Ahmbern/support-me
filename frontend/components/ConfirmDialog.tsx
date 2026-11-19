@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useId, useRef, type ReactNode } from 'react';
+import { useId, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { useFocusTrap } from '@/lib/useFocusTrap';
 
 export interface ConfirmDialogProps {
   open: boolean;
@@ -22,9 +23,6 @@ export interface ConfirmDialogProps {
   onConfirm: () => void;
   onCancel: () => void;
 }
-
-const FOCUSABLE =
-  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 /**
  * In-app replacement for the native confirm dialog on destructive actions, in the
@@ -52,51 +50,16 @@ export function ConfirmDialog({
   const dialogRef = useRef<HTMLDivElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
 
-  // Read inside the keydown handler so the listener doesn't need to be
-  // re-bound (and focus re-captured) whenever the parent re-renders.
-  const latest = useRef({ onCancel, busy });
-  useEffect(() => {
-    latest.current = { onCancel, busy };
+  // Shared trap: focus starts on Cancel (the safe action), Tab stays inside,
+  // Escape cancels unless a request is in flight, and focus returns to the
+  // opener on close.
+  useFocusTrap({
+    active: open,
+    containerRef: dialogRef,
+    initialFocusRef: cancelRef,
+    onEscape: onCancel,
+    escapeDisabled: busy,
   });
-
-  useEffect(() => {
-    if (!open) return;
-    const trigger = document.activeElement as HTMLElement | null;
-    cancelRef.current?.focus();
-
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        if (!latest.current.busy) latest.current.onCancel();
-        return;
-      }
-      if (e.key !== 'Tab' || !dialogRef.current) return;
-
-      const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>(FOCUSABLE));
-      if (focusable.length === 0) {
-        e.preventDefault();
-        return;
-      }
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      const active = document.activeElement;
-      const outside = !dialogRef.current.contains(active);
-      if (e.shiftKey && (active === first || outside)) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && (active === last || outside)) {
-        e.preventDefault();
-        first.focus();
-      }
-    };
-
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.removeEventListener('keydown', onKeyDown);
-      // The trigger may be gone (e.g. the deleted row) — only restore if it's still on the page.
-      if (trigger?.isConnected) trigger.focus();
-    };
-  }, [open]);
 
   if (!open || typeof document === 'undefined') return null;
 

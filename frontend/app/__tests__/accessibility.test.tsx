@@ -132,6 +132,29 @@ describe('WCAG 2.1 AA Accessibility Standards', () => {
       expect(content).toContain(':focus-visible');
       expect(content).toContain('.btn-brutal:focus-visible');
       expect(content).toContain('.input-brutal:focus-visible');
+      // The shared 3px ring must resolve in both themes (#458).
+      expect(content).toContain('outline: 3px solid var(--focus-ring)');
+      expect(content).toMatch(/--focus-ring:\s*#7c3aed/);
+      expect(content).toMatch(/--focus-ring:\s*#c4b5fd/);
+    });
+
+    it('keeps a visible focus ring on the Discover search and dashboard links (#458)', () => {
+      const discoverPath = path.resolve(__dirname, '../discover/page.tsx');
+      const dashboardPath = path.resolve(__dirname, '../dashboard/page.tsx');
+      const discover = fs.readFileSync(discoverPath, 'utf8');
+      const dashboard = fs.readFileSync(dashboardPath, 'utf8');
+
+      // A bare focus:outline-none would beat the global :focus-visible rule and
+      // leave keyboard users with no indicator. It is banned unless replaced
+      // by an explicit focus-visible ring, which these elements now carry.
+      expect(discover).not.toContain('focus:outline-none');
+      expect(dashboard).not.toContain('focus:outline-none');
+      expect(discover).toContain('focus-visible:outline-[3px]');
+      expect(discover).toContain('focus-visible:outline-focus-ring');
+      // Both activity links (donation + withdrawal) must be covered.
+      const ringOccurrences = dashboard.match(/focus-visible:outline-\[3px\]/g) ?? [];
+      expect(ringOccurrences).toHaveLength(2);
+      expect(dashboard).toContain('focus-visible:outline-focus-ring');
     });
   });
 });

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useId, useRef, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import {
   Share08Icon,
@@ -9,6 +9,7 @@ import {
 } from '@hugeicons/core-free-icons';
 import { notify } from '@/lib/notify';
 import { QrCodeCard } from '@/components/QrCodeCard';
+import { useFocusTrap } from '@/lib/useFocusTrap';
 
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://support-mee.vercel.app';
 
@@ -39,21 +40,23 @@ export function ShareModal({
 }: ShareModalProps) {
   const [mode, setMode] = useState<ShareMode>(initialMode);
   const [copied, setCopied] = useState(false);
+  const titleId = useId();
   const modalRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+
+  // Move focus into the dialog on open, trap Tab inside it, and return focus
+  // to the opener on close. Escape closes the modal.
+  useFocusTrap({
+    active: true,
+    containerRef: modalRef,
+    initialFocusRef: closeRef,
+    onEscape: onClose,
+  });
 
   const profileUrl =
     typeof window !== 'undefined'
       ? `${window.location.origin}/${creator.username}`
       : `${SITE_URL}/${creator.username}`;
-
-  // Keyboard accessibility: Escape closes modal
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [onClose]);
 
   const handleCopy = async () => {
     if (!profileUrl) return;
@@ -99,7 +102,7 @@ export function ShareModal({
       }}
       role="dialog"
       aria-modal="true"
-      aria-labelledby="share-modal-title"
+      aria-labelledby={titleId}
     >
       <div
         ref={modalRef}
@@ -108,7 +111,7 @@ export function ShareModal({
         {/* Modal Header */}
         <div className="flex items-center justify-between gap-4">
           <div>
-            <h2 id="share-modal-title" className="text-2xl font-extrabold text-ink">
+            <h2 id={titleId} className="text-2xl font-extrabold text-ink">
               Share Profile
             </h2>
             <p className="text-sm text-muted font-medium mt-1">
@@ -116,6 +119,7 @@ export function ShareModal({
             </p>
           </div>
           <button
+            ref={closeRef}
             type="button"
             onClick={onClose}
             aria-label="Close"
@@ -125,12 +129,13 @@ export function ShareModal({
           </button>
         </div>
 
-        {/* Choice buttons: Both, Copy Link, QR Code */}
-        <div className="flex flex-wrap gap-2" role="tablist" aria-label="Share choices">
+        {/* Choice buttons: Both, Copy Link, QR Code. These toggle which
+            sections are shown rather than switching tabpanels, so they are
+            plain buttons with aria-pressed, not an incomplete tab pattern. */}
+        <div className="flex flex-wrap gap-2" role="group" aria-label="Share choices">
           <button
             type="button"
-            role="tab"
-            aria-selected={mode === 'both'}
+            aria-pressed={mode === 'both'}
             onClick={() => setMode('both')}
             className={`btn-brutal text-sm px-4 py-2 ${
               mode === 'both' ? 'btn-brutal-primary' : 'btn-brutal-white'
@@ -140,8 +145,7 @@ export function ShareModal({
           </button>
           <button
             type="button"
-            role="tab"
-            aria-selected={mode === 'link'}
+            aria-pressed={mode === 'link'}
             onClick={() => setMode('link')}
             className={`btn-brutal text-sm px-4 py-2 gap-1.5 ${
               mode === 'link' ? 'btn-brutal-primary' : 'btn-brutal-white'
@@ -152,8 +156,7 @@ export function ShareModal({
           </button>
           <button
             type="button"
-            role="tab"
-            aria-selected={mode === 'qr'}
+            aria-pressed={mode === 'qr'}
             onClick={() => setMode('qr')}
             className={`btn-brutal text-sm px-4 py-2 gap-1.5 ${
               mode === 'qr' ? 'btn-brutal-primary' : 'btn-brutal-white'

@@ -7,7 +7,7 @@ export default function robots(): MetadataRoute.Robots {
     rules: [
       {
         userAgent: '*',
-        allow: ['/', '/[username]'],
+        allow: ['/'],
         disallow: [
           '/dashboard',
           '/settings',
@@ -18,6 +18,9 @@ export default function robots(): MetadataRoute.Robots {
           '/auth',
           '/auth/*',
           '/api/*',
+          // Receipt pages contain transaction details meant for the recipient.
+          '/receipt',
+          '/receipt/*',
         ],
       },
     ],
