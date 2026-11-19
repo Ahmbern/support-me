@@ -51,12 +51,30 @@ describe('SEO & Robots Directives', () => {
     expect(rules.disallow).toContain('/app');
     expect(rules.allow).toContain('/');
     expect(rules.allow).not.toContain('/donate');
+    // The bracketed Next.js dynamic segment is a literal path that matches
+    // nothing in robots.txt and must not be advertised (#451).
+    expect(rules.allow).not.toContain('/[username]');
+    expect(rules.disallow).toContain('/receipt');
   });
 
   it('generates valid sitemap for public routes', () => {
     const map = sitemap();
     expect(map.length).toBeGreaterThan(0);
     expect(map.some((entry) => entry.url.endsWith('/'))).toBe(true);
+    expect(map.some((entry) => entry.url.endsWith('/discover'))).toBe(true);
     expect(map.some((entry) => entry.url.endsWith('/donate'))).toBe(false);
+  });
+
+  it('uses stable lastModified values across requests (#451)', () => {
+    const first = sitemap();
+    const second = sitemap();
+
+    expect(first.map((entry) => entry.lastModified)).toEqual(
+      second.map((entry) => entry.lastModified)
+    );
+    // A fixed timestamp, not "now" on each call.
+    expect(new Date(first[0].lastModified as string).toISOString()).toBe(
+      '2026-09-01T00:00:00.000Z'
+    );
   });
 });
