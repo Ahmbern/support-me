@@ -1,7 +1,8 @@
 import { Request, RequestHandler } from 'express';
-import * as jwt from 'jsonwebtoken';
 import { ForbiddenError, UnauthorizedError } from '../errors/AppError';
-import { getJwtSecret, getAllowedOrigins } from '../config';
+import { getAllowedOrigins } from '../config';
+import { signToken, verifyToken } from '../lib/tokens';
+import type { TokenPayload } from '../lib/tokens';
 import prisma from '../prisma';
 import { TtlCache } from '../services/ttlCache';
 import { asyncHandler } from './asyncHandler';
@@ -76,12 +77,9 @@ export const authMiddleware: RequestHandler = asyncHandler(async (req, res, next
     }
   }
 
-  let decoded: { id: number; walletAddress: string | null };
+  let decoded: TokenPayload;
   try {
-    decoded = jwt.verify(token, getJwtSecret()) as {
-      id: number;
-      walletAddress: string | null;
-    };
+    decoded = verifyToken(token);
   } catch {
     return next(new UnauthorizedError('Invalid token'));
   }
@@ -101,9 +99,5 @@ export const authMiddleware: RequestHandler = asyncHandler(async (req, res, next
 });
 
 export const generateToken = (userId: number, walletAddress: string | null): string => {
-  return jwt.sign(
-    { id: userId, walletAddress },
-    getJwtSecret(),
-    { expiresIn: '7d' }
-  );
+  return signToken(userId, walletAddress);
 };
