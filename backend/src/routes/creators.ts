@@ -376,7 +376,7 @@ router.put(
     // A profile can only be edited by its owner — otherwise anyone could
     // overwrite another creator's payout wallet and redirect their donations.
     if (existing.userId !== req.user.id) {
-      throw new UnauthorizedError("You can only edit your own profile");
+      throw new ForbiddenError("You can only edit your own profile");
     }
 
     // Re-pointing the payout wallet needs proof of control and must not
@@ -423,7 +423,7 @@ router.patch(
       throw new NotFoundError("Creator not found");
     }
     if (existing.userId !== req.user.id) {
-      throw new UnauthorizedError("You can only edit your own profile");
+      throw new ForbiddenError("You can only edit your own profile");
     }
 
     const creator = await prisma.creator.update({

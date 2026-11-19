@@ -84,7 +84,11 @@ describe("authMiddleware (#270, #366)", () => {
 
     const error = await runMiddleware(req);
 
-    expect(error).toMatchObject({ statusCode: 401, message: "Cross-site request forgery blocked" });
+    expect(error).toMatchObject({
+      statusCode: 403,
+      code: "FORBIDDEN",
+      message: "Cross-site request forgery blocked",
+    });
   });
 
   it("allows cookie-based state-changing requests with valid origin (#366)", async () => {

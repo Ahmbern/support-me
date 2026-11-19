@@ -1,6 +1,6 @@
 import { Request, RequestHandler } from 'express';
 import * as jwt from 'jsonwebtoken';
-import { UnauthorizedError } from '../errors/AppError';
+import { ForbiddenError, UnauthorizedError } from '../errors/AppError';
 import { getJwtSecret, getAllowedOrigins } from '../config';
 import prisma from '../prisma';
 import { TtlCache } from '../services/ttlCache';
@@ -72,7 +72,7 @@ export const authMiddleware: RequestHandler = asyncHandler(async (req, res, next
     const origin = req.headers.origin || (req.headers.referer ? new URL(req.headers.referer).origin : undefined);
     const allowed = getAllowedOrigins().map((o) => o.replace(/\/$/, ''));
     if (origin && !allowed.includes(origin.replace(/\/$/, ''))) {
-      return next(new UnauthorizedError('Cross-site request forgery blocked'));
+      return next(new ForbiddenError('Cross-site request forgery blocked'));
     }
   }
 

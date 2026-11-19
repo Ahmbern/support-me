@@ -291,7 +291,8 @@ describe("PUT /api/creators/:username", () => {
       .set("Authorization", `Bearer ${token}`)
       .send({ bio: "hijack" });
 
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("FORBIDDEN");
     expect(mockedPrisma.creator.update).not.toHaveBeenCalled();
   });
 
@@ -417,7 +418,8 @@ describe("PATCH /api/creators/:username/theme (#227)", () => {
 
     const res = await patchTheme({ theme });
 
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("FORBIDDEN");
     expect(mockedPrisma.creator.update).not.toHaveBeenCalled();
   });
 
