@@ -1,4 +1,4 @@
-.PHONY: build test clean deploy
+.PHONY: build test clean deploy fmt lint
 
 # Deploy settings (override on the command line, e.g.
 #   make deploy SOURCE=deployer ADMINS='["GABC..."]'
@@ -9,10 +9,10 @@ TIMELOCK_DELAY ?= 0
 WASM_DIR = target/wasm32v1-none/release
 
 build:
-	cd ../.. && cargo build --manifest-path contracts/donation/Cargo.toml --target wasm32-unknown-unknown --release
+	cd ../.. && cargo build --manifest-path contracts/donation/Cargo.toml --target wasm32v1-none --release
 
 test:
-	cd ../.. && cargo test --manifest-path contracts/donation/Cargo.toml --lib
+	cd ../.. && cargo test --manifest-path contracts/donation/Cargo.toml
 
 clean:
 	cd ../.. && cargo clean --manifest-path contracts/donation/Cargo.toml
@@ -21,7 +21,7 @@ fmt:
 	cd ../.. && cargo fmt --manifest-path contracts/donation/Cargo.toml
 
 lint:
-	cd ../.. && cargo clippy --manifest-path contracts/donation/Cargo.toml --target wasm32-unknown-unknown
+	cd ../.. && cargo clippy --manifest-path contracts/donation/Cargo.toml --all-targets -- -D warnings
 
 # Deploys the donation + creator-registry pair. Both are initialized by their
 # constructors in the deploy transaction (no separate initialize call). The
