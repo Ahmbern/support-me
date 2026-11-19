@@ -39,8 +39,13 @@ function validateImageDimensions(file: File): Promise<{ width: number; height: n
  * Validate and upload an avatar image, returning its secure Cloudinary URL.
  * Throws UploadError with a user-facing message on any validation or transport
  * failure.
+ *
+ * `token` is the caller's auth token (from useAuth()) — the signing route
+ * requires it (#364) and has no other way to see the session, since the
+ * backend's session cookie is scoped to the backend's own origin, not this
+ * frontend route's.
  */
-export async function uploadAvatar(file: File): Promise<string> {
+export async function uploadAvatar(file: File, token: string | null): Promise<string> {
   if (!ALLOWED_TYPES.includes(file.type)) {
     throw new UploadError('Please choose a JPEG, PNG, WebP, or GIF image.');
   }
@@ -59,7 +64,10 @@ export async function uploadAvatar(file: File): Promise<string> {
     transformation: string;
   };
   try {
-    const res = await fetch('/api/cloudinary-sign', { method: 'POST' });
+    const res = await fetch('/api/cloudinary-sign', {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       throw new UploadError(body.error || 'Could not start the upload.');

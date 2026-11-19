@@ -212,24 +212,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Check if frontend types updated when contracts/common changed
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            BASE_REF=${{ github.event.pull_request.base.sha }}
-            COMMON_CHANGED=$(git diff --name-only $BASE_REF | grep -E "^contracts/common/src/lib\.rs" || true)
-            if [ -n "$COMMON_CHANGED" ]; then
-              TS_CHANGED=$(git diff --name-only $BASE_REF | grep -E "^frontend/.*\.tsx?$" || true)
-              if [ -z "$TS_CHANGED" ]; then
-                echo "Error: contracts/common/src/lib.rs changed, but no frontend TypeScript files were updated."
-                echo "Please ensure any changes to shared types are mirrored in the frontend."
-                exit 1
-              else
-                echo "contracts/common changed, and frontend TS files changed. Assuming types are synced."
-              fi
-            fi
-          fi
+      - name: Check contract event structs match docs/architecture/contract-events.md
+        run: node scripts/check-contract-event-drift.js
 
   test-all:
     name: All tests passed

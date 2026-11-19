@@ -181,6 +181,12 @@ model Withdrawal {
   anchorTxId  String // SEP-24 transaction id
   stellarTxId String? // on-chain payment to the anchor (stellar_transaction_id)
   status      String   @default("completed")
+  // Defaults to false (#393): a self-reported withdrawal is never trusted
+  // as real until a verification path (see routes/withdrawals.ts, and the
+  // "not yet implemented" note on verifyWithdrawal) confirms it against the
+  // anchor or Horizon. Mirrors Donation.verified's same client-report
+  // distrust.
+  verified    Boolean  @default(false)
   createdAt   DateTime @default(now())
 
   // A given anchor transaction maps to exactly one withdrawal record. Lets the

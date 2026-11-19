@@ -1,5 +1,7 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'crypto';
+import { API_URL } from '@/lib/api';
+import { RateLimiter } from '@/lib/rateLimiter';
 
 // Signs a Cloudinary upload server-side so the API secret never ships to the
 // browser. The client asks for a signature, then uploads the file directly to
@@ -14,7 +16,72 @@ import crypto from 'crypto';
 const UPLOAD_FOLDER = 'supportme/avatars';
 const INCOMING_TRANSFORM = 'c_limit,w_512,h_512';
 
-export async function POST() {
+// This route is only meant for a signed-in creator changing their own avatar
+// (#364): without an auth check, a script could request signatures in a
+// loop and upload against our Cloudinary account until quota/cost limits
+// are hit, or hand a signature to a third party. There's no shared JWT
+// secret between the frontend and backend deployments, so the session is
+// verified by asking the backend (which already owns that check) rather
+// than duplicating JWT verification here.
+//
+// The backend's session cookie is scoped to the backend's own origin (see
+// AUTH_COOKIE_NAME in backend/src/routes/auth.ts), so it's never visible to
+// this frontend-origin route — the caller must send the token explicitly as
+// an Authorization header, the same way app/settings/page.tsx already talks
+// to the backend directly.
+async function isAuthenticated(request: NextRequest): Promise<boolean> {
+  const authHeader = request.headers.get('authorization');
+  if (!authHeader) return false;
+
+  try {
+    const res = await fetch(`${API_URL}/api/auth/me`, {
+      headers: { authorization: authHeader },
+    });
+    return res.ok;
+  } catch {
+    // Backend unreachable: fail closed rather than minting a signature we
+    // can't actually attribute to a real session.
+    return false;
+  }
+}
+
+const RATE_LIMIT_WINDOW_MS = Number(process.env.CLOUDINARY_SIGN_RATE_LIMIT_WINDOW_MS) || 60_000;
+const RATE_LIMIT_MAX = Number(process.env.CLOUDINARY_SIGN_RATE_LIMIT_MAX) || 10;
+
+// Keyed separately by user and by IP, so one abusive IP can't exhaust a
+// shared budget for every signed-in creator behind it (and vice versa).
+const userLimiter = new RateLimiter(RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS);
+const ipLimiter = new RateLimiter(RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS);
+
+function clientIp(request: NextRequest): string {
+  const forwardedFor = request.headers.get('x-forwarded-for');
+  return forwardedFor?.split(',')[0]?.trim() || 'unknown';
+}
+
+export async function POST(request: NextRequest) {
+  if (!(await isAuthenticated(request))) {
+    return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
+  }
+
+  const ip = clientIp(request);
+  // The auth check above only proves the session is valid, not who it
+  // belongs to — using the raw Authorization header (guaranteed present at
+  // this point) as the per-user rate-limit key separates users without
+  // needing to decode the token.
+  const userKey = request.headers.get('authorization') as string;
+
+  if (!userLimiter.attempt(userKey) || !ipLimiter.attempt(ip)) {
+    const retryAfter = Math.max(
+      userLimiter.retryAfterSeconds(userKey),
+      ipLimiter.retryAfterSeconds(ip),
+      1
+    );
+    return NextResponse.json(
+      { error: 'Too many signature requests, please try again shortly.' },
+      { status: 429, headers: { 'Retry-After': String(retryAfter) } }
+    );
+  }
+
   const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
   const apiKey = process.env.CLOUDINARY_API_KEY;
   const apiSecret = process.env.CLOUDINARY_API_SECRET;

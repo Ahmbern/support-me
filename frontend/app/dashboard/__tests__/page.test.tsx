@@ -158,6 +158,7 @@ const withdrawal = {
   anchorTxId: 'anchor-1',
   stellarTxId: 'stellar-1',
   status: 'completed',
+  verified: true,
   createdAt: '2026-01-02T00:00:00.000Z',
 };
 
@@ -360,6 +361,26 @@ describe('DashboardPage', () => {
 
     // The tip still renders alongside it.
     expect(screen.getByText('nice work')).toBeInTheDocument();
+
+    await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
+  });
+
+  it('excludes unverified withdrawals from the withdrawn total (#393)', async () => {
+    const unverified = { ...withdrawal, id: 2, amountIn: 7, verified: false };
+    mockFetchByUrl({ creator, donations: [donation], withdrawals: [withdrawal, unverified] });
+
+    render(<DashboardPage />);
+
+    await waitFor(() => expect(screen.getByText('Dashboard')).toBeInTheDocument());
+
+    // Only the verified withdrawal (12 USDC) counts toward the total; the
+    // unverified one (7 USDC) is a self-report that hasn't been confirmed yet.
+    expect(screen.getByText('Withdrawn').parentElement).toHaveTextContent('12 USDC');
+    expect(screen.getByText('Withdrawn').parentElement).not.toHaveTextContent('19 USDC');
+
+    // Both still show up in the activity feed; only the totals card filters.
+    expect(screen.getByText('−12 USDC')).toBeInTheDocument();
+    expect(screen.getByText('−7 USDC')).toBeInTheDocument();
 
     await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
   });

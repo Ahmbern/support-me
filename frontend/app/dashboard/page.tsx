@@ -42,6 +42,7 @@ interface Withdrawal {
   anchorTxId: string;
   stellarTxId: string | null;
   status: string;
+  verified: boolean;
   createdAt: string;
 }
 
@@ -360,11 +361,16 @@ export default function DashboardPage() {
 
   // Total cashed out, by asset withdrawn. Kept separate from the received-volume
   // cards above so those stay a clean lifetime-received figure.
-  const withdrawnByCurrency = withdrawals.reduce<Record<string, number>>((acc, w) => {
+  //
+  // Only verified withdrawals count toward the totals (#393): a withdrawal is
+  // self-reported by the creator at creation time and is never trusted until
+  // independently confirmed, so an unverified row must not inflate this figure.
+  const verifiedWithdrawals = withdrawals.filter((w) => w.verified);
+  const withdrawnByCurrency = verifiedWithdrawals.reduce<Record<string, number>>((acc, w) => {
     acc[w.currency] = (acc[w.currency] || 0) + w.amountIn;
     return acc;
   }, {});
-  const withdrawnTotal = withdrawals.reduce((sum, w) => sum + w.amountIn, 0);
+  const withdrawnTotal = verifiedWithdrawals.reduce((sum, w) => sum + w.amountIn, 0);
 
   // Merge tips and cash-outs into one time-ordered feed.
   const activity: ActivityItem[] = [
