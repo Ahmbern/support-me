@@ -67,12 +67,25 @@ export function isExecutorSideChargeError(message: string): boolean {
 export enum SubscriptionChargeErrorReason {
   InsufficientAllowance = "InsufficientAllowance",
   InsufficientBalance = "InsufficientBalance",
+  // #465: the contract re-validates the token allowlist and min/max bounds
+  // on every charge, not just at `subscribe` time, so an emergency token
+  // removal or a tightened limit can fail an otherwise-due charge too.
+  TokenNotAllowed = "TokenNotAllowed",
+  AmountOutOfBounds = "AmountOutOfBounds",
 }
 
 const CONTRACT_ERROR_CODE_TO_REASON: Record<number, SubscriptionChargeErrorReason> = {
   1: SubscriptionChargeErrorReason.InsufficientAllowance,
   2: SubscriptionChargeErrorReason.InsufficientBalance,
+  3: SubscriptionChargeErrorReason.TokenNotAllowed,
+  4: SubscriptionChargeErrorReason.AmountOutOfBounds,
 };
+
+/** Reverse of `CONTRACT_ERROR_CODE_TO_REASON`, for re-encoding a decoded reason back into its `Error(Contract, #<code>)` form. */
+const REASON_TO_CONTRACT_ERROR_CODE: Record<SubscriptionChargeErrorReason, number> =
+  Object.fromEntries(
+    Object.entries(CONTRACT_ERROR_CODE_TO_REASON).map(([code, reason]) => [reason, Number(code)])
+  ) as Record<SubscriptionChargeErrorReason, number>;
 
 /**
  * Extracts the donation contract's `ChargeError` discriminant from a
@@ -143,8 +156,7 @@ export function parseLastErrorReason(
 ): SubscriptionChargeErrorReason | undefined {
   if (!lastError) return undefined;
   const prefix = lastError.split(":", 1)[0];
-  return prefix === SubscriptionChargeErrorReason.InsufficientAllowance ||
-    prefix === SubscriptionChargeErrorReason.InsufficientBalance
+  return (Object.values(SubscriptionChargeErrorReason) as string[]).includes(prefix)
     ? (prefix as SubscriptionChargeErrorReason)
     : undefined;
 }
@@ -646,7 +658,9 @@ export class SubscriptionExecutor {
       if (result.status === "SUCCESS") return hash;
       if (result.status === "FAILED") {
         const reason = decodeChargeErrorReasonFromDiagnostics(result.diagnosticEventsXdr);
-        const suffix = reason ? ` (Error(Contract, #${reason === SubscriptionChargeErrorReason.InsufficientAllowance ? 1 : 2}))` : "";
+        const suffix = reason
+          ? ` (Error(Contract, #${REASON_TO_CONTRACT_ERROR_CODE[reason]}))`
+          : "";
         throw new Error(`Transaction ${hash} failed on-chain${suffix}`);
       }
 

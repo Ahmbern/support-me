@@ -1,0 +1,15 @@
+# CODEOWNERS routes review requests automatically. Update the usernames
+# below to the actual maintainers responsible for each area; a maintainer
+# with write access must be listed for GitHub to request their review.
+#
+# See https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Smart contracts: highest-risk surface (fund handling, auth, subscriptions).
+/contracts/                      @themancalledemma
+
+# Backend auth and security-sensitive middleware.
+/backend/src/middleware/         @themancalledemma
+/backend/src/routes/auth.ts      @themancalledemma
+
+# CI/CD and repo-level configuration.
+/.github/                        @themancalledemma

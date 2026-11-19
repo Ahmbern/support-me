@@ -409,6 +409,53 @@ describe('SettingsPage', () => {
     expect(notify.error).toHaveBeenCalledWith('Preset amounts must be positive numbers.');
   });
 
+  it('preserves an unsaved bio edit when invalidate() replaces the creator object mid-edit (#463)', async () => {
+    mockFetchRoutes({
+      '/api/creators/me': { body: baseCreator },
+      '/api/goals/bob': { body: { items: [] } },
+    });
+    const user = userEvent.setup();
+    let creatorRef = { ...baseCreator };
+    const invalidate = vi.fn(() => {
+      // Mimic CreatorContext: a refetch replaces `creator` with a brand
+      // new object reference (same id, same server-side bio, since the
+      // user's edit was never saved), which is exactly what should NOT
+      // overwrite an in-progress edit.
+      creatorRef = { ...creatorRef };
+      mockUseCreator.mockReturnValue({ creator: creatorRef, loading: false, invalidate });
+      rerender(<SettingsPage />);
+    });
+    mockUseCreator.mockReturnValue({ creator: creatorRef, loading: false, invalidate });
+
+    const { rerender } = render(<SettingsPage />);
+    const bioInput = await screen.findByLabelText('Bio');
+    await user.clear(bioInput);
+    await user.type(bioInput, 'Unsaved draft bio');
+    expect(bioInput).toHaveValue('Unsaved draft bio');
+
+    // Something else triggers a refetch (e.g. a goal action) while the
+    // settings form is still dirty.
+    invalidate();
+
+    expect(screen.getByLabelText('Bio')).toHaveValue('Unsaved draft bio');
+  });
+
+  it('still hydrates the form when the creator object changes to a different creator', async () => {
+    mockFetchRoutes({
+      '/api/creators/me': { body: baseCreator },
+      '/api/goals/bob': { body: { items: [] } },
+    });
+
+    const { rerender } = render(<SettingsPage />);
+    await waitFor(() => expect(screen.getByLabelText('Bio')).toBeInTheDocument());
+
+    const otherCreator = { ...baseCreator, id: 2, username: 'carol', bio: 'Carol bio' };
+    mockUseCreator.mockReturnValue({ creator: otherCreator, loading: false, invalidate: vi.fn() });
+    rerender(<SettingsPage />);
+
+    await waitFor(() => expect(screen.getByLabelText('Bio')).toHaveValue('Carol bio'));
+  });
+
   it('rejects more than 6 preset amounts', async () => {
     mockFetchRoutes({
       '/api/creators/me': { body: baseCreator },
