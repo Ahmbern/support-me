@@ -30,8 +30,9 @@
 //! idle periods. See the `common` crate docs for the TTL constants.
 
 use common::{
-    extend_instance_ttl, extend_persistent_ttl, extend_subscription_ttl, AdminAction,
-    AdminProposal, CreatorProfile, DonationRecord, Subscription, ADMIN_PROPOSAL_TTL_SECONDS,
+    extend_instance_ttl, extend_persistent_ttl, extend_subscription_ttl, validate_admin_set,
+    AdminAction, AdminProposal, CreatorProfile, DonationRecord, Subscription,
+    ADMIN_PROPOSAL_TTL_SECONDS,
 };
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, symbol_short, token, Address, Env,
@@ -295,14 +296,9 @@ impl DonationContract {
         timelock_delay: u64,
         registry: Address,
     ) {
+        validate_admin_set(&admins, threshold);
         if env.storage().instance().has(&ADMIN_KEY) || env.storage().instance().has(&ADMINS_KEY) {
             soroban_sdk::panic_with_error!(&env, DonationError::AlreadyInitialized);
-        }
-        if admins.is_empty() {
-            soroban_sdk::panic_with_error!(&env, DonationError::EmptyAdminList);
-        }
-        if threshold == 0 || threshold > admins.len() {
-            soroban_sdk::panic_with_error!(&env, DonationError::InvalidThreshold);
         }
 
         for i in 0..admins.len() {
@@ -457,6 +453,13 @@ impl DonationContract {
         if proposal.executed {
             soroban_sdk::panic_with_error!(&env, DonationError::ProposalAlreadyExecuted);
         }
+        if proposal.cancelled {
+            soroban_sdk::panic_with_error!(&env, DonationError::ProposalAlreadyExecuted);
+        }
+        let now = env.ledger().timestamp();
+        if now > proposal.expires_at {
+            soroban_sdk::panic_with_error!(&env, DonationError::ProposalAlreadyExecuted);
+        }
 
         let has_approved: bool = env
             .storage()
@@ -560,16 +563,22 @@ impl DonationContract {
         if proposal.executed {
             soroban_sdk::panic_with_error!(&env, DonationError::ProposalAlreadyExecuted);
         }
+        if proposal.cancelled {
+            soroban_sdk::panic_with_error!(&env, DonationError::ProposalAlreadyExecuted);
+        }
 
         let threshold: u32 = match env.storage().instance().get(&THRESHOLD_KEY) {
             Some(t) => t,
             None => soroban_sdk::panic_with_error!(&env, DonationError::NotInitialized),
         };
-        if proposal.approvals_count < threshold {
+        if Self::count_current_admin_votes(&env, APPROVAL_KEY, proposal_id) < threshold {
             soroban_sdk::panic_with_error!(&env, DonationError::Unauthorized);
         }
 
         let now = env.ledger().timestamp();
+        if now > proposal.expires_at {
+            soroban_sdk::panic_with_error!(&env, DonationError::ProposalAlreadyExecuted);
+        }
         if now < proposal.eta {
             soroban_sdk::panic_with_error!(&env, DonationError::TimelockNotElapsed);
         }
