@@ -1453,6 +1453,7 @@ mod tests {
 
     use super::*;
     use creator_registry::{CreatorRegistryContract, CreatorRegistryContractClient};
+    use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
     use soroban_sdk::testutils::{Address as _, Ledger};
     use soroban_sdk::token::StellarAssetClient;
 
@@ -3105,5 +3106,146 @@ mod tests {
         assert_eq!(sub_don.amount, 500);
         assert_eq!(sub_don.creator, creator);
         assert_eq!(sub_don.donor, donor);
+    }
+    // ------------------------------------------------------------------
+    // TTL keep-alives (#471)
+    // ------------------------------------------------------------------
+
+    const MONTH_SECS: u64 = 2_592_000;
+    /// Ledgers to advance so a freshly extended persistent entry drops just
+    /// below the extension threshold.
+    const TTL_DECAY: u32 =
+        common::PERSISTENT_BUMP_AMOUNT - common::PERSISTENT_LIFETIME_THRESHOLD + 1;
+
+    fn instance_ttl(env: &Env, contract: &Address) -> u32 {
+        env.as_contract(contract, || env.storage().instance().get_ttl())
+    }
+
+    fn subscription_ttl(env: &Env, contract: &Address, id: u64) -> u32 {
+        env.as_contract(contract, || {
+            env.storage().persistent().get_ttl(&(SUBSCRIPTIONS_KEY, id))
+        })
+    }
+
+    fn advance_ledgers(env: &Env, ledgers: u32) {
+        env.ledger().with_mut(|li| li.sequence_number += ledgers);
+    }
+
+    /// A monthly subscription with a funded, approved supporter and a set executor.
+    fn monthly_subscription(
+        env: &Env,
+    ) -> (DonationContractClient<'_>, Address, Address, Address, u64) {
+        let (admin, donation_client, _registry_client) = setup(env);
+        let supporter = Address::generate(env);
+        let creator = Address::generate(env);
+        let executor = Address::generate(env);
+        let token_address = create_token_contract(env, &admin);
+        donation_client.add_allowed_token(&token_address);
+        StellarAssetClient::new(env, &token_address).mint(&supporter, &10_000);
+        donation_client.register_creator(&creator, &String::from_bytes(env, b"dev"));
+        donation_client.set_executor(&executor);
+
+        env.ledger().with_mut(|li| li.timestamp = 1_000);
+        let id = donation_client.subscribe(&supporter, &creator, &token_address, &100, &MONTH_SECS);
+
+        // Approve for far longer than the decay used by the TTL tests.
+        token::Client::new(env, &token_address).approve(
+            &supporter,
+            &donation_client.address,
+            &1_000,
+            &1_000_000,
+        );
+        (donation_client, supporter, creator, executor, id)
+    }
+
+    #[test]
+    fn test_bump_extends_instance_ttl() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (_admin, donation_client, _registry_client) = setup(&env);
+
+        advance_ledgers(
+            &env,
+            common::INSTANCE_BUMP_AMOUNT - 2 * common::DAY_IN_LEDGERS,
+        );
+        assert!(instance_ttl(&env, &donation_client.address) < common::INSTANCE_LIFETIME_THRESHOLD);
+
+        donation_client.bump();
+        assert_eq!(
+            instance_ttl(&env, &donation_client.address),
+            common::INSTANCE_BUMP_AMOUNT
+        );
+    }
+
+    #[test]
+    fn test_bump_subscription_extends_entry_ttl() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (donation_client, _supporter, _creator, _executor, id) = monthly_subscription(&env);
+
+        advance_ledgers(&env, TTL_DECAY);
+        assert!(
+            subscription_ttl(&env, &donation_client.address, id)
+                < common::PERSISTENT_LIFETIME_THRESHOLD
+        );
+
+        donation_client.bump_subscription(&id);
+        assert_eq!(
+            subscription_ttl(&env, &donation_client.address, id),
+            common::PERSISTENT_BUMP_AMOUNT
+        );
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_bump_subscription_panics_on_unknown_id() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (_admin, donation_client, _registry_client) = setup(&env);
+        donation_client.bump_subscription(&999);
+    }
+
+    #[test]
+    fn test_charge_subscription_extends_entry_ttl_for_monthly_interval() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (donation_client, _supporter, _creator, executor, id) = monthly_subscription(&env);
+
+        advance_ledgers(&env, TTL_DECAY);
+        assert!(
+            subscription_ttl(&env, &donation_client.address, id)
+                < common::PERSISTENT_LIFETIME_THRESHOLD
+        );
+
+        env.ledger()
+            .with_mut(|li| li.timestamp = 1_000 + MONTH_SECS);
+        donation_client.charge_subscription(&executor, &id);
+
+        // A 30-day interval maps to the base persistent bump amount.
+        assert_eq!(
+            subscription_ttl(&env, &donation_client.address, id),
+            common::PERSISTENT_BUMP_AMOUNT
+        );
+    }
+
+    #[test]
+    fn test_cancel_subscription_extends_entry_ttl_for_monthly_interval() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (donation_client, supporter, _creator, _executor, id) = monthly_subscription(&env);
+
+        advance_ledgers(&env, TTL_DECAY);
+        assert!(
+            subscription_ttl(&env, &donation_client.address, id)
+                < common::PERSISTENT_LIFETIME_THRESHOLD
+        );
+
+        donation_client.cancel_subscription(&supporter, &id);
+
+        assert!(!donation_client.get_subscription(&id).unwrap().active);
+        assert_eq!(
+            subscription_ttl(&env, &donation_client.address, id),
+            common::PERSISTENT_BUMP_AMOUNT
+        );
     }
 }
