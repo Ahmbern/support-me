@@ -15,6 +15,7 @@ import { DonationHistorySkeleton } from '@/components/DonationHistorySkeleton';
 import { TipChart } from '@/components/TipChart';
 import { ShareCard } from '@/components/ShareCard';
 import { ShareModal } from '@/components/ShareModal';
+import { InlineError } from '@/components/InlineError';
 import { QrCodeCard } from '@/components/QrCodeCard';
 import { DashboardStats, type CreatorStats } from '@/components/DashboardStats';
 import { usePrices } from '@/lib/usePrices';
@@ -395,9 +396,11 @@ export default function DashboardPage() {
           </div>
 
           {error && (
-            <div className="card-brutal bg-brand-pink p-4 mb-6 text-ink font-bold">
-              {error}
-            </div>
+            <InlineError
+              className="card-brutal bg-brand-pink p-4 mb-6 text-ink font-bold"
+              message={error}
+              onRetry={() => setRetryNonce((n) => n + 1)}
+            />
           )}
 
           {donations.length === 0 ? (
@@ -598,16 +601,12 @@ export default function DashboardPage() {
               </ul>
             )}
             {loadMoreError && (
-              <div className="mt-4 p-3 bg-red-50 border-2 border-red-500 rounded-lg flex items-center justify-between gap-2 text-sm text-red-700">
-                <span>{loadMoreError}</span>
-                <button
-                  type="button"
-                  onClick={loadMoreDonations}
-                  className="px-3 py-1 bg-red-600 text-white font-bold rounded text-xs hover:bg-red-700 transition-colors"
-                >
-                  Retry
-                </button>
-              </div>
+              <InlineError
+                className="mt-4 p-3 bg-red-50 border-2 border-red-500 rounded-lg text-sm text-red-700"
+                message={loadMoreError}
+                onRetry={loadMoreDonations}
+                compact
+              />
             )}
 
             {loadingMoreDonations && (
