@@ -43,6 +43,20 @@ soroban contract invoke \
 
 *Output:* Returns the `proposal_id` (e.g. `0`) and emits a `ProposalCreatedEvent`.
 
+The action is checked against the contract's current state before it is stored, so an invalid payload fails here instead of after the approvals and the timelock. Nothing is stored when a check fails:
+
+| Proposed action | Rejected when | Error |
+| --- | --- | --- |
+| `SetThreshold(n)` | `n` is 0 or above the current admin count | `InvalidThreshold` |
+| `AddAdmin(a)` | `a` is already an admin | `AdminAlreadyExists` |
+| `RemoveAdmin(a)` | `a` is not an admin | `AdminNotFound` |
+| `RemoveAdmin(a)` | `a` is the last admin | `CannotRemoveAllAdmins` |
+| `RemoveAdmin(a)` | the remaining admins would be fewer than the threshold | `ThresholdExceedsAdmins` |
+| `SetMinDonation(x)` / `SetMaxDonation(x)` (donation only) | `x` is negative | `InvalidAmount` |
+| `SetMinDonation(x)` / `SetMaxDonation(x)` (donation only) | the new bound would put the minimum above a non-zero maximum | `InvalidDonationLimits` |
+
+Execution still enforces these conditions, because the admin set, threshold or donation limits can change while a proposal waits. An `AddAdmin` or `RemoveAdmin` that would change nothing by then fails with `AdminAlreadyExists` or `AdminNotFound` and stays unexecuted, so it can be cancelled.
+
 ---
 
 ### Step 2: Co-Signers Approve the Proposal
