@@ -37,7 +37,7 @@ interface AuthContextType {
   completeTwitterLogin: (code: string, state: string) => Promise<LoginResult>;
   requestMagicLink: (email: string) => Promise<void>;
   verifyMagicLink: (token: string) => Promise<LoginResult>;
-  logout: () => void;
+  logout: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -202,21 +202,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return persistSession(data);
   };
 
-  const logout = () => {
+  const logout = async () => {
+    const res = await fetch(`${API_URL}/api/auth/logout`, {
+      method: 'POST',
+      credentials: 'include',
+    });
+    if (!res.ok) {
+      throw new Error('The server could not end your session.');
+    }
+
     setUser(null);
     setToken(null);
     localStorage.removeItem('authToken');
     localStorage.removeItem('authUser');
-    try {
-      const p = fetch(`${API_URL}/api/auth/logout`, {
-        method: 'POST',
-        credentials: 'include',
-      });
-      if (p && typeof p.catch === 'function') {
-        p.catch(() => {});
-      }
-    } catch {}
-    disconnectWallet().catch(() => {});
+    void disconnectWallet().catch(() => {});
   };
 
   return (
