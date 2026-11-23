@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # SupportMe Testnet Deployment Script
-# Automates building contracts, deploying to testnet, cross-initialization,
-# executor registration, and updating deployments/testnet.json.
+# Automates building contracts, deploying to testnet, wiring the two contracts
+# to each other, executor registration, and updating deployments/testnet.json.
 
 NETWORK="${NETWORK:-testnet}"
 RPC_URL="${SOROBAN_RPC_URL:-https://soroban-testnet.stellar.org}"
@@ -54,25 +54,24 @@ if [ ! -f "$REGISTRY_WASM" ] || [ ! -f "$DONATION_WASM" ]; then
 fi
 
 echo "Step 2: Deploying contracts to $NETWORK..."
-REGISTRY_DEPLOY=$(stellar contract deploy --wasm "$REGISTRY_WASM" --source-account "$ADMIN_KEY" --network "$NETWORK")
-REGISTRY_ID=$(echo "$REGISTRY_DEPLOY" | tail -n 1 | tr -d '\r')
-
 DONATION_DEPLOY=$(stellar contract deploy --wasm "$DONATION_WASM" --source-account "$ADMIN_KEY" --network "$NETWORK")
 DONATION_ID=$(echo "$DONATION_DEPLOY" | tail -n 1 | tr -d '\r')
 
-echo "Deployed Creator Registry ID: $REGISTRY_ID"
-echo "Deployed Donation Contract ID: $DONATION_ID"
+# The registry has no initialize entrypoint: it is configured by its
+# constructor in the deploy transaction (1-of-1 admin, no timelock), pointing
+# at the donation contract deployed above.
+REGISTRY_DEPLOY=$(stellar contract deploy --wasm "$REGISTRY_WASM" --source-account "$ADMIN_KEY" --network "$NETWORK" -- \
+  --admins "[\"$ADMIN_ADDRESS\"]" --threshold 1 --timelock_delay 0 \
+  --donation_contract "$DONATION_ID")
+REGISTRY_ID=$(echo "$REGISTRY_DEPLOY" | tail -n 1 | tr -d '\r')
 
-echo "Step 3: Initializing contracts with cross-references..."
-# Initialize Donation with Registry ID
+echo "Deployed Donation Contract ID: $DONATION_ID"
+echo "Deployed Creator Registry ID: $REGISTRY_ID"
+
+echo "Step 3: Initializing the donation contract with the registry ID..."
 stellar contract invoke --id "$DONATION_ID" \
   --source-account "$ADMIN_KEY" --network "$NETWORK" -- \
   initialize --admin "$ADMIN_ADDRESS" --registry "$REGISTRY_ID"
-
-# Initialize Registry with Donation ID
-stellar contract invoke --id "$REGISTRY_ID" \
-  --source-account "$ADMIN_KEY" --network "$NETWORK" -- \
-  initialize --admin "$ADMIN_ADDRESS" --donation_contract "$DONATION_ID"
 
 if [ -n "$EXECUTOR_ADDRESS" ]; then
   echo "Step 4: Configuring executor on donation contract..."
