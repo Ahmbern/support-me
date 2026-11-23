@@ -11,7 +11,7 @@ test.describe('Creator Profile Flow', () => {
 
     // 2. Creator identity
     await expect(page.getByRole('heading', { level: 1, name: 'Alice Creator' })).toBeVisible();
-    await expect(page.getByText('@alice')).toBeVisible();
+    await expect(page.getByText('@alice', { exact: true })).toBeVisible();
     await expect(page.getByText(DEFAULT_MOCK_CREATOR.bio)).toBeVisible();
 
     // 3. Social links
