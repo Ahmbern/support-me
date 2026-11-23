@@ -82,6 +82,9 @@ export default function SettingsPage() {
   // Goal awaiting confirmation in the delete dialog.
   const [goalToDelete, setGoalToDelete] = useState<Goal | null>(null);
   const [deletingGoal, setDeletingGoal] = useState(false);
+  // Theme editor reports its own unsaved draft state up to the page guard.
+  const [themeDirty, setThemeDirty] = useState(false);
+  const anyDirty = dirty || themeDirty || goalDraft !== null;
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   // Tracks which creator.id the form was last hydrated from, so a refetch
@@ -260,14 +263,14 @@ export default function SettingsPage() {
   // only covers browser-level navigation, not in-app Link clicks — the App
   // Router has no built-in route-change interceptor for that.
   useEffect(() => {
-    if (!dirty) return;
+    if (!anyDirty) return;
     const handler = (e: BeforeUnloadEvent) => {
       e.preventDefault();
       e.returnValue = '';
     };
     window.addEventListener('beforeunload', handler);
     return () => window.removeEventListener('beforeunload', handler);
-  }, [dirty]);
+  }, [anyDirty]);
 
   const handleFilePick = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -831,6 +834,7 @@ export default function SettingsPage() {
               displayName={creator.displayName || creator.username}
               token={token}
               initialTheme={creator.theme ?? null}
+              onDirtyChange={setThemeDirty}
             />
 
             {/* Social links */}
