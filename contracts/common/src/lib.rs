@@ -107,12 +107,9 @@ pub fn extend_instance_ttl(env: &Env) {
 pub struct DonationRecord {
     pub donor: Address,
     pub creator: Address,
-    /// Gross amount the donor sent. The creator receives `amount -
-    /// fee_amount`; the platform fee address receives `fee_amount`.
+    /// Amount the donor sent. The creator receives the full amount: there
+    /// is no platform fee, so no portion is withheld or routed elsewhere.
     pub amount: i128,
-    /// Portion of `amount` routed to the platform fee address. Zero when no
-    /// platform fee is configured.
-    pub fee_amount: i128,
     pub memo: String,
     pub timestamp: u64,
 }
