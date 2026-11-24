@@ -20,9 +20,10 @@ import { TestnetBadge } from '@/components/TestnetBadge';
 import { useAuth } from '@/context/AuthContext';
 import { API_URL } from '@/lib/api';
 import { explorerAccountUrl } from '@/lib/stellarNetwork';
+import { availableAssetCodes, type AssetCode } from '@/lib/assets';
 
 export type LeaderboardType = 'creators' | 'supporters';
-export type CurrencyFilter = 'XLM' | 'USDC' | 'EURC';
+export type CurrencyFilter = AssetCode;
 export type TimeFilter = 'all' | 'month' | 'week';
 
 export interface CreatorLeaderboardEntry {
@@ -66,7 +67,7 @@ function sliceAddress(addr: string): string {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
 
-const CURRENCIES: CurrencyFilter[] = ['XLM', 'USDC', 'EURC'];
+const CURRENCIES: CurrencyFilter[] = availableAssetCodes();
 const TIMEFRAMES: { id: TimeFilter; label: string }[] = [
   { id: 'all', label: 'All-Time' },
   { id: 'month', label: 'This Month' },
