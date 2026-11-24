@@ -10,6 +10,7 @@ import {
   Settings01Icon,
 } from '@hugeicons/core-free-icons';
 import { useAuth } from '@/context/AuthContext';
+import { notify } from '@/lib/notify';
 
 /**
  * Secondary destinations, kept out of the desktop top nav so it stays short
@@ -60,9 +61,29 @@ export function WalletMenu() {
   const { user, logout } = useAuth();
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
+  const signOutPending = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  const handleSignOut = async () => {
+    if (signOutPending.current) return;
+
+    signOutPending.current = true;
+    setSigningOut(true);
+    try {
+      await logout();
+      window.location.href = '/';
+    } catch {
+      notify.error('Could not sign out', 'The server could not end your session. Please try again.', {
+        action: { label: 'Retry', onClick: handleSignOut },
+      });
+    } finally {
+      signOutPending.current = false;
+      setSigningOut(false);
+    }
+  };
 
   const getMenuItems = () => {
     if (!menuRef.current) return [];
@@ -202,13 +223,11 @@ export function WalletMenu() {
           <button
             role="menuitem"
             tabIndex={-1}
-            onClick={() => {
-              logout();
-              window.location.href = '/';
-            }}
+            onClick={handleSignOut}
+            aria-disabled={signingOut}
             className="w-full text-left px-3 py-2 rounded-lg font-bold text-ink hover:bg-brand-pink transition-colors min-h-[44px] flex items-center focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--focus-ring)] focus-visible:bg-brand-pink"
           >
-            Sign Out
+            {signingOut ? 'Signing out…' : 'Sign Out'}
           </button>
         </div>
       )}

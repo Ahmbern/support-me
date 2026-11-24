@@ -107,12 +107,9 @@ pub fn extend_instance_ttl(env: &Env) {
 pub struct DonationRecord {
     pub donor: Address,
     pub creator: Address,
-    /// Gross amount the donor sent. The creator receives `amount -
-    /// fee_amount`; the platform fee address receives `fee_amount`.
+    /// Amount the donor sent. The creator receives the full amount: there
+    /// is no platform fee, so no portion is withheld or routed elsewhere.
     pub amount: i128,
-    /// Portion of `amount` routed to the platform fee address. Zero when no
-    /// platform fee is configured.
-    pub fee_amount: i128,
     pub memo: String,
     pub timestamp: u64,
 }
@@ -214,6 +211,7 @@ pub struct AdminProposal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use soroban_sdk::testutils::Address as _;
 
     #[test]
     fn subscription_bump_amount_scales_with_interval_within_bounds() {
@@ -238,5 +236,36 @@ mod tests {
             PERSISTENT_MAX_BUMP_AMOUNT
         );
         const _: () = assert!(PERSISTENT_MAX_BUMP_AMOUNT < 180 * DAY_IN_LEDGERS);
+    }
+
+    #[test]
+    #[should_panic(expected = "admin list cannot be empty")]
+    fn validate_admin_set_rejects_empty() {
+        let env = Env::default();
+        validate_admin_set(&Vec::new(&env), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid signature threshold")]
+    fn validate_admin_set_rejects_zero_threshold() {
+        let env = Env::default();
+        let a = Address::generate(&env);
+        validate_admin_set(&soroban_sdk::vec![&env, a], 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid signature threshold")]
+    fn validate_admin_set_rejects_threshold_above_count() {
+        let env = Env::default();
+        let a = Address::generate(&env);
+        validate_admin_set(&soroban_sdk::vec![&env, a], 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate admin in admin list")]
+    fn validate_admin_set_rejects_duplicates() {
+        let env = Env::default();
+        let a = Address::generate(&env);
+        validate_admin_set(&soroban_sdk::vec![&env, a.clone(), a], 1);
     }
 }

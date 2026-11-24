@@ -236,19 +236,35 @@ router.get(
   "/leaderboard",
   validate({ query: leaderboardQuerySchema }),
   asyncHandler(async (req, res) => {
-    const { type, currency, page, limit } = req.query as unknown as {
+    const { type, currency, period, page, limit } = req.query as unknown as {
       type: "creators" | "supporters";
       currency: string;
+      period: "all" | "month" | "week";
       page: number;
       limit: number;
     };
 
-    const cacheKey = `${type}:${currency}`;
+    const now = new Date();
+    let periodStart: Date | undefined;
+    if (period === "month") {
+      periodStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    } else if (period === "week") {
+      periodStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+      const daysSinceMonday = (periodStart.getUTCDay() + 6) % 7;
+      periodStart.setUTCDate(periodStart.getUTCDate() - daysSinceMonday);
+    }
+
+    const cacheKey = `${type}:${currency}:${periodStart?.toISOString() ?? "all"}`;
     const { entries: allRanked, total } = await leaderboardCache.getOrSet(cacheKey, async () => {
+      const donationWhere = {
+        currency,
+        ...(periodStart ? { createdAt: { gte: periodStart } } : {}),
+      };
+
       if (type === "creators") {
         const grouped = await prisma.donation.groupBy({
           by: ["creatorId"],
-          where: { currency, creator: { walletAddress: { not: null } } },
+          where: { ...donationWhere, creator: { walletAddress: { not: null } } },
           _sum: { amount: true },
           _count: { _all: true },
           orderBy: { _sum: { amount: "desc" } },
@@ -274,7 +290,7 @@ router.get(
 
       const grouped = await prisma.donation.groupBy({
         by: ["senderAddress"],
-        where: { currency },
+        where: donationWhere,
         _sum: { amount: true },
         _count: { _all: true },
         orderBy: { _sum: { amount: "desc" } },
