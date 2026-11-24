@@ -156,6 +156,9 @@ pub struct DonationRecordedEvent {
 #[repr(u32)]
 pub enum RegistryError {
     NotInitialized = 1,
+    /// Reserved. Setup only happens in `__constructor`, so no entrypoint
+    /// returns this any more; it stays so code 2 is never reused for a
+    /// different error by clients that already map it.
     AlreadyInitialized = 2,
     Unauthorized = 3,
     AlreadyRegistered = 4,
@@ -215,55 +218,6 @@ impl CreatorRegistryContract {
     /// Permissionless instance keep-alive for quiet periods.
     pub fn bump(env: Env) {
         extend_instance_ttl(&env);
-    }
-
-    /// One-time setup. `donation_contract` is the only address that will be
-    /// permitted to call `record_donation`.
-    pub fn initialize(env: Env, admin: Address, donation_contract: Address) {
-        admin.require_auth();
-        if env.storage().instance().has(&ADMIN_KEY) || env.storage().instance().has(&ADMINS_KEY) {
-            soroban_sdk::panic_with_error!(&env, RegistryError::AlreadyInitialized);
-        }
-
-        let mut admins = Vec::new(&env);
-        admins.push_back(admin.clone());
-
-        env.storage().instance().set(&ADMIN_KEY, &admin);
-        env.storage().instance().set(&ADMINS_KEY, &admins);
-        env.storage().instance().set(&THRESHOLD_KEY, &1u32);
-        env.storage().instance().set(&TIMELOCK_DELAY_KEY, &0u64);
-        env.storage()
-            .instance()
-            .set(&DONATION_KEY, &donation_contract);
-    }
-
-    /// One-time multi-sig setup: configures admin list, threshold, and timelock delay.
-    pub fn initialize_multisig(
-        env: Env,
-        admins: Vec<Address>,
-        threshold: u32,
-        timelock_delay: u64,
-        donation_contract: Address,
-    ) {
-        validate_admin_set(&admins, threshold);
-        if env.storage().instance().has(&ADMIN_KEY) || env.storage().instance().has(&ADMINS_KEY) {
-            soroban_sdk::panic_with_error!(&env, RegistryError::AlreadyInitialized);
-        }
-
-        for i in 0..admins.len() {
-            admins.get(i).unwrap().require_auth();
-        }
-
-        let primary_admin = admins.get(0).unwrap();
-        env.storage().instance().set(&ADMIN_KEY, &primary_admin);
-        env.storage().instance().set(&ADMINS_KEY, &admins);
-        env.storage().instance().set(&THRESHOLD_KEY, &threshold);
-        env.storage()
-            .instance()
-            .set(&TIMELOCK_DELAY_KEY, &timelock_delay);
-        env.storage()
-            .instance()
-            .set(&DONATION_KEY, &donation_contract);
     }
 
     /// Returns whether a given address is an authorized contract admin.
@@ -933,6 +887,7 @@ mod tests {
         storage::{Instance as _, Persistent as _},
         Address as _, Events as _, Ledger,
     };
+    use soroban_sdk::xdr::{ScErrorCode, ScErrorType};
     use soroban_sdk::{vec, IntoVal, Val};
 
     /// Deploys a 1-of-1 registry whose authorized donation contract is a
@@ -1025,16 +980,66 @@ mod tests {
         );
     }
 
+    /// Setup is constructor-only (#561): the registry exports no `initialize`
+    /// or `initialize_multisig`, and the host refuses a second
+    /// `__constructor` call, so nobody can re-run setup on a live registry.
     #[test]
-    fn test_initialize_twice_panics() {
+    fn test_setup_is_constructor_only() {
         let env = Env::default();
         env.mock_all_auths();
         let (client, admin, donation_contract) = setup(&env);
-        let res = client.try_initialize(&admin, &donation_contract);
-        assert_eq!(
-            res.unwrap_err().unwrap(),
-            RegistryError::AlreadyInitialized.into()
+        let intruder = Address::generate(&env);
+        let other_donation = Address::generate(&env);
+
+        let single_admin_args: Vec<Val> =
+            vec![&env, intruder.into_val(&env), other_donation.into_val(&env)];
+        let admin_set_args: Vec<Val> = vec![
+            &env,
+            vec![&env, intruder.clone()].into_val(&env),
+            1u32.into_val(&env),
+            0u64.into_val(&env),
+            other_donation.into_val(&env),
+        ];
+        let not_callable = soroban_sdk::Error::from_type_and_code(
+            ScErrorType::Context,
+            ScErrorCode::InvalidAction,
         );
+
+        for (name, args) in [
+            ("initialize", single_admin_args),
+            ("initialize_multisig", admin_set_args.clone()),
+            ("__constructor", admin_set_args),
+        ] {
+            let res = env.try_invoke_contract::<Val, soroban_sdk::Error>(
+                &client.address,
+                &Symbol::new(&env, name),
+                args,
+            );
+            assert_eq!(
+                res.err(),
+                Some(Ok(not_callable)),
+                "{name} must not be callable"
+            );
+        }
+
+        // The constructor's configuration is untouched.
+        assert!(client.is_admin(&admin));
+        assert!(!client.is_admin(&intruder));
+        let creator = Address::generate(&env);
+        client.record_donation(&donation_contract, &creator, &10);
+        assert_eq!(
+            client.try_record_donation(&other_donation, &creator, &10),
+            Err(Ok(RegistryError::CallerNotAuthorized.into()))
+        );
+    }
+
+    /// Unlike the removed initializers, constructor setup leaves the
+    /// instance (admin set, threshold, donation contract) with a full TTL.
+    #[test]
+    fn test_constructor_extends_instance_ttl() {
+        let env = Env::default();
+        let (client, _, _) = setup(&env);
+        assert_eq!(instance_ttl(&env, &client.address), INSTANCE_BUMP_AMOUNT);
     }
 
     #[test]
@@ -1789,22 +1794,6 @@ mod tests {
         assert_eq!(
             client.try_approve_admin_action(&admin2, &prop2_id),
             Err(Ok(RegistryError::ProposalExpired.into()))
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "duplicate admin in admin list")]
-    fn test_initialize_multisig_rejects_duplicate_admins() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let admin = Address::generate(&env);
-        let admins = vec![&env, admin.clone(), admin.clone()];
-        CreatorRegistryContract::initialize_multisig(
-            env.clone(),
-            admins,
-            1u32,
-            0u64,
-            Address::generate(&env),
         );
     }
 

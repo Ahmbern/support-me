@@ -68,6 +68,7 @@ DONATION_DEPLOY=$(stellar contract deploy \
   --registry "$REGISTRY_ID")
 DONATION_ID=$(echo "$DONATION_DEPLOY" | tail -n 1 | tr -d '\r')
 echo "Deployed Donation Contract ID: $DONATION_ID"
+echo "Deployed Creator Registry ID: $REGISTRY_ID"
 
 REGISTRY_DEPLOY=$(stellar contract deploy \
   --wasm "$REGISTRY_WASM" \
