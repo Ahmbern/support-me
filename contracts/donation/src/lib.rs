@@ -120,6 +120,7 @@ pub struct ProposalCreatedEvent {
     #[topic]
     pub proposer: Address,
     pub eta: u64,
+    pub action: AdminAction,
 }
 
 /// Emitted when an admin proposal receives an approval.
@@ -149,6 +150,41 @@ pub struct ProposalCancelledEvent {
     pub proposal_id: u64,
     #[topic]
     pub cancelled_by: Address,
+}
+
+/// Emitted when an admin is added to the multisig set.
+#[contractevent(topics = ["admin_added"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminAddedEvent {
+    #[topic]
+    pub admin: Address,
+    pub total_admins: u32,
+}
+
+/// Emitted when an admin is removed from the multisig set.
+#[contractevent(topics = ["admin_removed"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminRemovedEvent {
+    #[topic]
+    pub admin: Address,
+    pub total_admins: u32,
+}
+
+/// Emitted when the multisig approval threshold changes.
+#[contractevent(topics = ["threshold_chg"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ThresholdChangedEvent {
+    pub old_threshold: u32,
+    pub new_threshold: u32,
+}
+
+/// Emitted when the registry / donation-contract address is repointed.
+#[contractevent(topics = ["registry_chg"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegistryChangedEvent {
+    pub old_registry: Option<Address>,
+    #[topic]
+    pub new_registry: Address,
 }
 
 #[contractevent(topics = ["goal_upd"])]
@@ -594,13 +630,24 @@ impl DonationContract {
                 .publish(&env);
             }
             AdminAction::SetDonationContract(target) => {
+                let old: Option<Address> = env.storage().instance().get(&REGISTRY_KEY);
                 env.storage().instance().set(&REGISTRY_KEY, &target);
+                RegistryChangedEvent {
+                    old_registry: old,
+                    new_registry: target,
+                }
+                .publish(&env);
             }
             AdminAction::AddAdmin(new_admin) => {
                 let mut admins: Vec<Address> = env.storage().instance().get(&ADMINS_KEY).unwrap();
                 if !Self::contains_address(&admins, &new_admin) {
-                    admins.push_back(new_admin);
+                    admins.push_back(new_admin.clone());
                     env.storage().instance().set(&ADMINS_KEY, &admins);
+                    AdminAddedEvent {
+                        admin: new_admin,
+                        total_admins: admins.len(),
+                    }
+                    .publish(&env);
                 }
             }
             AdminAction::RemoveAdmin(old_admin) => {
@@ -620,6 +667,11 @@ impl DonationContract {
                     soroban_sdk::panic_with_error!(&env, DonationError::ThresholdExceedsAdmins);
                 }
                 env.storage().instance().set(&ADMINS_KEY, &new_admins);
+                AdminRemovedEvent {
+                    admin: old_admin.clone(),
+                    total_admins: new_admins.len(),
+                }
+                .publish(&env);
 
                 // #284: a removed primary admin must lose every privilege
                 // the legacy single-admin shortcuts (`set_executor`, token
@@ -641,7 +693,13 @@ impl DonationContract {
                 if new_threshold == 0 || new_threshold > admins.len() {
                     soroban_sdk::panic_with_error!(&env, DonationError::InvalidThreshold);
                 }
+                let old: u32 = env.storage().instance().get(&THRESHOLD_KEY).unwrap_or(0);
                 env.storage().instance().set(&THRESHOLD_KEY, &new_threshold);
+                ThresholdChangedEvent {
+                    old_threshold: old,
+                    new_threshold,
+                }
+                .publish(&env);
             }
             AdminAction::Pause => {
                 env.storage().instance().set(&PAUSED_KEY, &true);
@@ -3223,5 +3281,90 @@ mod tests {
         client.approve_admin_action(&admin2, &prop0);
         client.execute_admin_action(&admin1, &prop0);
         assert!(client.get_proposal(&prop0).unwrap().executed);
+    }
+
+    // ---- #556: event assertions for admin-set / threshold / registry mutations ----
+
+    fn events_by_topic(env: &Env, topic: &str) -> u32 {
+        let mut n = 0u32;
+        for e in env.events().all().iter() {
+            let (_c, topics, _d) = e;
+            if topics.len() > 0 {
+                let first: soroban_sdk::Val = topics.get(0).unwrap();
+                let sym: Result<soroban_sdk::Symbol, _> =
+                    soroban_sdk::Symbol::try_from_val(env, &first);
+                if let Ok(s) = sym {
+                    if s == soroban_sdk::Symbol::new(env, topic) {
+                        n += 1;
+                    }
+                }
+            }
+        }
+        n
+    }
+
+    #[test]
+    fn test_execute_add_admin_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let admins = soroban_sdk::vec![&env, admin.clone()];
+        let (client, _) = deploy_pair(&env, admins, 1, 0);
+
+        let new_admin = Address::generate(&env);
+        let pid = client.propose_admin_action(&admin, &AdminAction::AddAdmin(new_admin.clone()));
+        client.execute_admin_action(&admin, &pid);
+
+        assert!(client.is_admin(&new_admin));
+        assert_eq!(events_by_topic(&env, "admin_added"), 1);
+    }
+
+    #[test]
+    fn test_execute_remove_admin_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let a1 = Address::generate(&env);
+        let a2 = Address::generate(&env);
+        let admins = soroban_sdk::vec![&env, a1.clone(), a2.clone()];
+        let (client, _) = deploy_pair(&env, admins, 1, 0);
+
+        let pid = client.propose_admin_action(&a1, &AdminAction::RemoveAdmin(a2.clone()));
+        client.execute_admin_action(&a1, &pid);
+
+        assert!(!client.is_admin(&a2));
+        assert_eq!(events_by_topic(&env, "admin_removed"), 1);
+    }
+
+    #[test]
+    fn test_execute_set_threshold_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let a1 = Address::generate(&env);
+        let a2 = Address::generate(&env);
+        let admins = soroban_sdk::vec![&env, a1.clone(), a2.clone()];
+        let (client, _) = deploy_pair(&env, admins, 1, 0);
+
+        let pid = client.propose_admin_action(&a1, &AdminAction::SetThreshold(2));
+        client.execute_admin_action(&a1, &pid);
+
+        assert_eq!(events_by_topic(&env, "threshold_chg"), 1);
+    }
+
+    #[test]
+    fn test_execute_set_donation_contract_emits_registry_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let admins = soroban_sdk::vec![&env, admin.clone()];
+        let (client, _) = deploy_pair(&env, admins, 1, 0);
+
+        let new_registry = Address::generate(&env);
+        let pid = client.propose_admin_action(
+            &admin,
+            &AdminAction::SetDonationContract(new_registry.clone()),
+        );
+        client.execute_admin_action(&admin, &pid);
+
+        assert_eq!(events_by_topic(&env, "registry_chg"), 1);
     }
 }
