@@ -15,6 +15,8 @@
 //! This is an accepted design choice: the backend indexing `DonatedEvent`s
 //! is the canonical source of long-term history. Future contract upgrades
 //! should avoid relying on the complete on-chain history being present.
+//! Successful state-changing entry points extend the contract instance TTL;
+//! the donation-record TTL exception below applies only to old log entries.
 //!
 //! Multi-signature and timelock governance:
 //! High-risk administrative operations (setting executor, rotating admins,
@@ -77,7 +79,6 @@ pub struct DonatedEvent {
     pub donation_id: u32,
     pub token: Address,
     pub amount: i128,
-    pub fee_amount: i128,
     pub memo: String,
     pub timestamp: u64,
     pub subscription_id: Option<u64>,
@@ -112,6 +113,18 @@ pub struct SubscriptionCancelledEvent {
     pub subscription_id: u64,
 }
 
+/// Emitted when cancellation replaces a positive shared SAC allowance.
+#[contractevent(topics = ["sub_allowance_updated"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SubscriptionAllowanceEvent {
+    #[topic]
+    pub supporter: Address,
+    #[topic]
+    pub token: Address,
+    pub subscription_id: u64,
+    pub live_until_ledger: u32,
+}
+
 /// Emitted when an admin proposal is created.
 #[contractevent(topics = ["prop_created"])]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -120,6 +133,7 @@ pub struct ProposalCreatedEvent {
     #[topic]
     pub proposer: Address,
     pub eta: u64,
+    pub action: AdminAction,
 }
 
 /// Emitted when an admin proposal receives an approval.
@@ -149,6 +163,41 @@ pub struct ProposalCancelledEvent {
     pub proposal_id: u64,
     #[topic]
     pub cancelled_by: Address,
+}
+
+/// Emitted when an admin is added to the multisig set.
+#[contractevent(topics = ["admin_added"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminAddedEvent {
+    #[topic]
+    pub admin: Address,
+    pub total_admins: u32,
+}
+
+/// Emitted when an admin is removed from the multisig set.
+#[contractevent(topics = ["admin_removed"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminRemovedEvent {
+    #[topic]
+    pub admin: Address,
+    pub total_admins: u32,
+}
+
+/// Emitted when the multisig approval threshold changes.
+#[contractevent(topics = ["threshold_chg"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ThresholdChangedEvent {
+    pub old_threshold: u32,
+    pub new_threshold: u32,
+}
+
+/// Emitted when the registry / donation-contract address is repointed.
+#[contractevent(topics = ["registry_chg"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegistryChangedEvent {
+    pub old_registry: Option<Address>,
+    #[topic]
+    pub new_registry: Address,
 }
 
 #[contractevent(topics = ["goal_upd"])]
@@ -205,13 +254,12 @@ pub enum DonationError {
     MultiSigRequired = 25,
     ExecutorNotSet = 26,
     Overflow = 27,
-    /// `AddAdmin` targets an address that is already an admin (#560).
-    AdminAlreadyExists = 28,
-    /// `RemoveAdmin` targets an address that is not an admin (#560).
-    AdminNotFound = 29,
-    /// A proposed min/max donation would leave the minimum above the
-    /// maximum while both are non-zero (#560).
-    InvalidDonationLimits = 30,
+    /// The proposal was cancelled (by its proposer or by threshold admin
+    /// cancellation requests) and can no longer be approved or executed.
+    ProposalCancelled = 28,
+    /// The proposal's lifetime (`created_at + ADMIN_PROPOSAL_TTL_SECONDS`)
+    /// has elapsed and it can no longer be approved or executed.
+    ProposalExpired = 29,
 }
 
 #[contractevent(topics = ["sub_failed"])]
@@ -293,6 +341,7 @@ impl DonationContract {
         env.storage().instance().set(&TIMELOCK_DELAY_KEY, &0u64);
         env.storage().instance().set(&PAUSED_KEY, &false);
         env.storage().instance().set(&REGISTRY_KEY, &registry);
+        extend_instance_ttl(&env);
     }
 
     /// One-time multi-sig setup: configures admin list, threshold, and timelock delay.
@@ -436,10 +485,12 @@ impl DonationContract {
             .persistent()
             .set(&PROPOSAL_COUNTER_KEY, &next_prop_id);
 
+        extend_instance_ttl(&env);
         ProposalCreatedEvent {
             proposal_id: prop_id,
             proposer,
             eta,
+            action: proposal.action.clone(),
         }
         .publish(&env);
 
@@ -462,11 +513,11 @@ impl DonationContract {
             soroban_sdk::panic_with_error!(&env, DonationError::ProposalAlreadyExecuted);
         }
         if proposal.cancelled {
-            soroban_sdk::panic_with_error!(&env, DonationError::ProposalAlreadyExecuted);
+            soroban_sdk::panic_with_error!(&env, DonationError::ProposalCancelled);
         }
         let now = env.ledger().timestamp();
         if now > proposal.expires_at {
-            soroban_sdk::panic_with_error!(&env, DonationError::ProposalAlreadyExecuted);
+            soroban_sdk::panic_with_error!(&env, DonationError::ProposalExpired);
         }
 
         let has_approved: bool = env
@@ -489,6 +540,7 @@ impl DonationContract {
             .persistent()
             .set(&(PROPOSAL_KEY, proposal_id), &proposal);
 
+        extend_instance_ttl(&env);
         ProposalApprovedEvent {
             proposal_id,
             admin,
@@ -572,7 +624,7 @@ impl DonationContract {
             soroban_sdk::panic_with_error!(&env, DonationError::ProposalAlreadyExecuted);
         }
         if proposal.cancelled {
-            soroban_sdk::panic_with_error!(&env, DonationError::ProposalAlreadyExecuted);
+            soroban_sdk::panic_with_error!(&env, DonationError::ProposalCancelled);
         }
 
         let threshold: u32 = match env.storage().instance().get(&THRESHOLD_KEY) {
@@ -585,7 +637,7 @@ impl DonationContract {
 
         let now = env.ledger().timestamp();
         if now > proposal.expires_at {
-            soroban_sdk::panic_with_error!(&env, DonationError::ProposalAlreadyExecuted);
+            soroban_sdk::panic_with_error!(&env, DonationError::ProposalExpired);
         }
         if now < proposal.eta {
             soroban_sdk::panic_with_error!(&env, DonationError::TimelockNotElapsed);
@@ -602,15 +654,27 @@ impl DonationContract {
                 .publish(&env);
             }
             AdminAction::SetDonationContract(target) => {
+                let old: Option<Address> = env.storage().instance().get(&REGISTRY_KEY);
                 env.storage().instance().set(&REGISTRY_KEY, &target);
+                RegistryChangedEvent {
+                    old_registry: old,
+                    new_registry: target,
+                }
+                .publish(&env);
             }
             // The admin set can change between proposal and execution, so an
             // Add/Remove that would now be a no-op fails instead of being
             // marked executed (#560).
             AdminAction::AddAdmin(new_admin) => {
                 let mut admins: Vec<Address> = env.storage().instance().get(&ADMINS_KEY).unwrap();
-                if Self::contains_address(&admins, &new_admin) {
-                    soroban_sdk::panic_with_error!(&env, DonationError::AdminAlreadyExists);
+                if !Self::contains_address(&admins, &new_admin) {
+                    admins.push_back(new_admin.clone());
+                    env.storage().instance().set(&ADMINS_KEY, &admins);
+                    AdminAddedEvent {
+                        admin: new_admin,
+                        total_admins: admins.len(),
+                    }
+                    .publish(&env);
                 }
                 admins.push_back(new_admin);
                 env.storage().instance().set(&ADMINS_KEY, &admins);
@@ -635,6 +699,11 @@ impl DonationContract {
                     soroban_sdk::panic_with_error!(&env, DonationError::ThresholdExceedsAdmins);
                 }
                 env.storage().instance().set(&ADMINS_KEY, &new_admins);
+                AdminRemovedEvent {
+                    admin: old_admin.clone(),
+                    total_admins: new_admins.len(),
+                }
+                .publish(&env);
 
                 // #284: a removed primary admin must lose every privilege
                 // the legacy single-admin shortcuts (`set_executor`, token
@@ -656,7 +725,13 @@ impl DonationContract {
                 if new_threshold == 0 || new_threshold > admins.len() {
                     soroban_sdk::panic_with_error!(&env, DonationError::InvalidThreshold);
                 }
+                let old: u32 = env.storage().instance().get(&THRESHOLD_KEY).unwrap_or(0);
                 env.storage().instance().set(&THRESHOLD_KEY, &new_threshold);
+                ThresholdChangedEvent {
+                    old_threshold: old,
+                    new_threshold,
+                }
+                .publish(&env);
             }
             AdminAction::Pause => {
                 env.storage().instance().set(&PAUSED_KEY, &true);
@@ -685,6 +760,7 @@ impl DonationContract {
             .persistent()
             .set(&(PROPOSAL_KEY, proposal_id), &proposal);
 
+        extend_instance_ttl(&env);
         ProposalExecutedEvent {
             proposal_id,
             executor,
@@ -721,7 +797,9 @@ impl DonationContract {
         }
         let registry = Self::registry_address(&env);
         let args: Vec<Val> = (creator, username).into_val(&env);
-        env.invoke_contract(&registry, &Symbol::new(&env, "register_creator"), args)
+        let profile = env.invoke_contract(&registry, &Symbol::new(&env, "register_creator"), args);
+        extend_instance_ttl(&env);
+        profile
     }
 
     /// Cross-contract call: reads a creator's profile from CreatorRegistry.
@@ -1025,7 +1103,6 @@ impl DonationContract {
             donor: donor.clone(),
             creator: creator.clone(),
             amount,
-            fee_amount: 0,
             memo: memo.clone(),
             timestamp: env.ledger().timestamp(),
         };
@@ -1047,13 +1124,13 @@ impl DonationContract {
             .persistent()
             .set(&DONATION_COUNTER, &next_counter);
 
+        extend_instance_ttl(&env);
         DonatedEvent {
             donor,
             creator,
             donation_id: counter,
             token,
             amount,
-            fee_amount: 0,
             memo,
             timestamp: env.ledger().timestamp(),
             subscription_id: None,
@@ -1138,6 +1215,7 @@ impl DonationContract {
         }
         .publish(&env);
 
+        extend_instance_ttl(&env);
         id
     }
 
@@ -1296,7 +1374,6 @@ impl DonationContract {
             donor: subscription.supporter.clone(),
             creator: subscription.creator.clone(),
             amount: subscription.amount,
-            fee_amount: 0,
             memo: memo.clone(),
             timestamp: now,
         };
@@ -1323,33 +1400,24 @@ impl DonationContract {
             donation_id: counter,
             token: subscription.token.clone(),
             amount: subscription.amount,
-            fee_amount: 0,
             memo,
             timestamp: now,
             subscription_id: Some(subscription_id),
         }
         .publish(&env);
 
+        extend_instance_ttl(&env);
         Ok(donation)
     }
 
-    /// Cancels a subscription and reduces the supporter's SAC allowance to
-    /// this contract by exactly this subscription's committed amount.
+    /// Cancels a subscription and subtracts its committed amount from the
+    /// supporter's shared SAC allowance for this token, clamping at zero.
     ///
-    /// # Allowance semantics
-    ///
-    /// SAC allowances are keyed by `(owner, spender)`, not per subscription,
-    /// so a supporter with two active subscriptions in the same token shares
-    /// one allowance between them. Zeroing that allowance on cancellation
-    /// (the old behavior) would silently break every *other* active
-    /// subscription in that token until the supporter noticed and
-    /// re-approved. Instead, this contract tracks each supporter's total
-    /// committed amount per token (`COMMITTED_KEY`, updated by `subscribe`
-    /// and here) and only decrements the live allowance by this
-    /// subscription's own `amount`, clamped at zero so a stale/lower
-    /// allowance (e.g. partially drawn down since) never underflows. The
-    /// remaining allowance is left untouched and continues to cover the
-    /// supporter's other active subscriptions in the same token.
+    /// A positive remainder is approved through the current ledger plus the
+    /// cancelled subscription's TTL bump. The SAC exposes only the allowance
+    /// amount, so this can shorten or lengthen the previous expiry. The
+    /// `sub_allowance_updated` event reports the replacement expiry so clients
+    /// can warn supporters and offer to re-approve through their desired ledger.
     pub fn cancel_subscription(env: Env, supporter: Address, subscription_id: u64) {
         supporter.require_auth();
 
@@ -1384,18 +1452,6 @@ impl DonationContract {
         let token_client = token::Client::new(&env, &subscription.token);
         let current_allowance = token_client.allowance(&supporter, &env.current_contract_address());
         let reduced_allowance = (current_allowance - subscription.amount).max(0);
-        // The SAC `TokenInterface` only exposes the allowance *amount*, not
-        // its current `live_until_ledger`, so the original expiration cannot
-        // be read back and preserved exactly on a partial reduction. When
-        // fully zeroing (no amount left to protect), the expiration argument
-        // is moot and 0 is passed, matching the old zeroing behavior. When a
-        // positive amount remains — i.e. other active subscriptions on this
-        // token still need it — this extends the allowance far enough to
-        // outlive this subscription's own remaining committed siblings,
-        // using the same per-subscription TTL budget `subscribe` already
-        // uses for the subscription entry itself (comfortably longer than
-        // one more charge interval). This can lengthen an allowance's
-        // remaining lifetime but never shortens one that is still needed.
         let expiration_ledger = if reduced_allowance > 0 {
             let bump_ledgers = common::subscription_bump_amount(subscription.interval_secs);
             env.ledger().sequence().saturating_add(bump_ledgers)
@@ -1408,6 +1464,16 @@ impl DonationContract {
             &reduced_allowance,
             &expiration_ledger,
         );
+
+        if reduced_allowance > 0 {
+            SubscriptionAllowanceEvent {
+                supporter: supporter.clone(),
+                token: subscription.token,
+                subscription_id,
+                live_until_ledger: expiration_ledger,
+            }
+            .publish(&env);
+        }
 
         SubscriptionCancelledEvent {
             supporter,
@@ -1539,7 +1605,8 @@ mod tests {
 
     use super::*;
     use creator_registry::{CreatorRegistryContract, CreatorRegistryContractClient};
-    use soroban_sdk::testutils::{Address as _, Ledger};
+    use soroban_sdk::events::Event as _;
+    use soroban_sdk::testutils::{storage::Instance as _, Address as _, Events as _, Ledger};
     use soroban_sdk::token::StellarAssetClient;
 
     fn create_token_contract(env: &Env, admin: &Address) -> Address {
@@ -1585,6 +1652,182 @@ mod tests {
         let (donation_client, registry_client) =
             deploy_pair(env, Vec::from_array(env, [admin.clone()]), 1, 0);
         (admin, donation_client, registry_client)
+    }
+
+    fn instance_ttl(env: &Env, contract: &Address) -> u32 {
+        env.as_contract(contract, || env.storage().instance().get_ttl())
+    }
+
+    fn lower_instance_ttl(env: &Env) {
+        env.ledger().with_mut(|li| {
+            li.sequence_number +=
+                common::INSTANCE_BUMP_AMOUNT - common::INSTANCE_LIFETIME_THRESHOLD + 1
+        });
+    }
+
+    fn assert_instance_ttl_is_low(env: &Env, contract: &Address) {
+        assert!(instance_ttl(env, contract) < common::INSTANCE_LIFETIME_THRESHOLD);
+    }
+
+    fn assert_instance_ttl_was_extended(env: &Env, contract: &Address) {
+        assert_eq!(instance_ttl(env, contract), common::INSTANCE_BUMP_AMOUNT);
+    }
+
+    #[test]
+    fn test_initialize_extends_instance_ttl() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(DonationContract, ());
+        let donation_client = DonationContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let registry = Address::generate(&env);
+
+        assert_instance_ttl_is_low(&env, &contract_id);
+
+        donation_client.initialize(&admin, &registry);
+
+        assert_instance_ttl_was_extended(&env, &contract_id);
+    }
+
+    #[test]
+    fn test_register_creator_extends_instance_ttl() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (_admin, donation_client, _registry_client) = setup(&env);
+        let creator = Address::generate(&env);
+
+        lower_instance_ttl(&env);
+        assert_instance_ttl_is_low(&env, &donation_client.address);
+
+        donation_client.register_creator(&creator, &String::from_bytes(&env, b"ttl_creator"));
+
+        assert_instance_ttl_was_extended(&env, &donation_client.address);
+    }
+
+    #[test]
+    fn test_donate_extends_instance_ttl() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (admin, donation_client, _registry_client) = setup(&env);
+        let donor = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let token_address = create_token_contract(&env, &admin);
+        donation_client.add_allowed_token(&token_address);
+        StellarAssetClient::new(&env, &token_address).mint(&donor, &100);
+
+        lower_instance_ttl(&env);
+        assert_instance_ttl_is_low(&env, &donation_client.address);
+
+        donation_client.donate(
+            &donor,
+            &creator,
+            &token_address,
+            &100,
+            &String::from_bytes(&env, b"ttl"),
+        );
+
+        assert_instance_ttl_was_extended(&env, &donation_client.address);
+    }
+
+    #[test]
+    fn test_subscribe_extends_instance_ttl() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (admin, donation_client, _registry_client) = setup(&env);
+        let supporter = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let token_address = create_token_contract(&env, &admin);
+        donation_client.add_allowed_token(&token_address);
+
+        lower_instance_ttl(&env);
+        assert_instance_ttl_is_low(&env, &donation_client.address);
+
+        donation_client.subscribe(&supporter, &creator, &token_address, &100, &1_000);
+
+        assert_instance_ttl_was_extended(&env, &donation_client.address);
+    }
+
+    #[test]
+    fn test_charge_subscription_extends_instance_ttl() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (admin, donation_client, _registry_client) = setup(&env);
+        let supporter = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let executor = Address::generate(&env);
+        let token_address = create_token_contract(&env, &admin);
+        donation_client.add_allowed_token(&token_address);
+        StellarAssetClient::new(&env, &token_address).mint(&supporter, &100);
+        donation_client.set_executor(&executor);
+        let id = donation_client.subscribe(&supporter, &creator, &token_address, &100, &1_000);
+        token::Client::new(&env, &token_address).approve(
+            &supporter,
+            &donation_client.address,
+            &100,
+            &100_000,
+        );
+        env.ledger().with_mut(|li| li.timestamp = 1_000);
+
+        lower_instance_ttl(&env);
+        assert_instance_ttl_is_low(&env, &donation_client.address);
+
+        donation_client.charge_subscription(&executor, &id);
+
+        assert_instance_ttl_was_extended(&env, &donation_client.address);
+    }
+
+    #[test]
+    fn test_propose_admin_action_extends_instance_ttl() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (admin, donation_client, _registry_client) = setup(&env);
+
+        lower_instance_ttl(&env);
+        assert_instance_ttl_is_low(&env, &donation_client.address);
+
+        donation_client.propose_admin_action(&admin, &AdminAction::Pause);
+
+        assert_instance_ttl_was_extended(&env, &donation_client.address);
+    }
+
+    #[test]
+    fn test_approve_admin_action_extends_instance_ttl() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let admin1 = Address::generate(&env);
+        let admin2 = Address::generate(&env);
+        let admins = Vec::from_array(&env, [admin1.clone(), admin2.clone()]);
+        let (donation_client, _registry_client) = deploy_pair(&env, admins, 2, 0);
+        let proposal_id = donation_client.propose_admin_action(&admin1, &AdminAction::Pause);
+
+        env.as_contract(&donation_client.address, || {
+            common::extend_persistent_ttl(&env, &(PROPOSAL_KEY, proposal_id));
+        });
+        lower_instance_ttl(&env);
+        assert_instance_ttl_is_low(&env, &donation_client.address);
+
+        donation_client.approve_admin_action(&admin2, &proposal_id);
+
+        assert_instance_ttl_was_extended(&env, &donation_client.address);
+    }
+
+    #[test]
+    fn test_execute_admin_action_extends_instance_ttl() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (admin, donation_client, _registry_client) = setup(&env);
+        let proposal_id = donation_client.propose_admin_action(&admin, &AdminAction::Pause);
+
+        env.as_contract(&donation_client.address, || {
+            common::extend_persistent_ttl(&env, &(PROPOSAL_KEY, proposal_id));
+            common::extend_persistent_ttl(&env, &(APPROVAL_KEY, proposal_id, admin.clone()));
+        });
+        lower_instance_ttl(&env);
+        assert_instance_ttl_is_low(&env, &donation_client.address);
+
+        donation_client.execute_admin_action(&admin, &proposal_id);
+
+        assert_instance_ttl_was_extended(&env, &donation_client.address);
     }
 
     #[test]
@@ -2566,6 +2809,75 @@ mod tests {
     }
 
     #[test]
+    fn test_partial_cancel_replaces_a_long_allowance_expiry() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let interval = 1_000;
+        let cancelled_at = 100;
+        let replacement_expiry = cancelled_at + common::subscription_bump_amount(interval);
+        let original_expiry = replacement_expiry + 1_000;
+        env.ledger().with_mut(|li| {
+            li.timestamp = 1_000;
+            li.sequence_number = cancelled_at;
+            // Keep the SAC instance live when we advance past the new allowance expiry.
+            li.min_persistent_entry_ttl = original_expiry;
+            li.max_entry_ttl = original_expiry + 1_000;
+        });
+
+        let (admin, donation_client, _registry_client) = setup(&env);
+        let supporter = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let token_address = create_token_contract(&env, &admin);
+        donation_client.add_allowed_token(&token_address);
+        let token_client = token::Client::new(&env, &token_address);
+        let id = donation_client.subscribe(&supporter, &creator, &token_address, &500, &interval);
+        donation_client.subscribe(
+            &supporter,
+            &Address::generate(&env),
+            &token_address,
+            &300,
+            &interval,
+        );
+        token_client.approve(&supporter, &donation_client.address, &800, &original_expiry);
+
+        donation_client.cancel_subscription(&supporter, &id);
+
+        assert_eq!(
+            env.events()
+                .all()
+                .filter_by_contract(&donation_client.address),
+            [
+                SubscriptionAllowanceEvent {
+                    supporter: supporter.clone(),
+                    token: token_address,
+                    subscription_id: id,
+                    live_until_ledger: replacement_expiry,
+                }
+                .to_xdr(&env, &donation_client.address),
+                SubscriptionCancelledEvent {
+                    supporter: supporter.clone(),
+                    creator,
+                    subscription_id: id,
+                }
+                .to_xdr(&env, &donation_client.address),
+            ]
+        );
+
+        env.ledger()
+            .with_mut(|li| li.sequence_number = replacement_expiry);
+        assert_eq!(
+            token_client.allowance(&supporter, &donation_client.address),
+            300
+        );
+        env.ledger()
+            .with_mut(|li| li.sequence_number = replacement_expiry + 1);
+        assert_eq!(
+            token_client.allowance(&supporter, &donation_client.address),
+            0
+        );
+    }
+
+    #[test]
     fn test_cancel_subscription_zeroes_allowance_when_no_siblings_remain() {
         let env = Env::default();
         env.mock_all_auths_allowing_non_root_auth();
@@ -2676,11 +2988,10 @@ mod tests {
             );
             donated_so_far += amt;
 
-            // Invariant 1: Fee never exceeds donation amount
-            assert!(record.fee_amount <= record.amount);
-            // Invariant 2: Gross donation amount is conserved
-            let creator_received = record.amount - record.fee_amount;
-            assert_eq!(creator_received + record.fee_amount, record.amount);
+            // Invariant 1: the stored record matches the donation exactly.
+            // There is no fee: the creator receives the full amount, so the
+            // record amount must equal the amount just donated.
+            assert_eq!(record.amount, amt);
 
             // Invariant 3: Balances update exactly by transferred amount
             assert_eq!(
@@ -3198,6 +3509,9 @@ mod tests {
 
             let total_donation = amount1 + amount2 + amount3;
             StellarAssetClient::new(&env, &token_address).mint(&donor, &(total_donation + 500));
+            let token_client = token::Client::new(&env, &token_address);
+
+            let mut donated_so_far = 0i128;
 
             for amt in [amount1, amount2, amount3] {
                 let rec = donation_client.donate(
@@ -3208,7 +3522,10 @@ mod tests {
                     &String::from_bytes(&env, b"prop"),
                 );
                 prop_assert_eq!(rec.amount, amt);
-                prop_assert!(rec.fee_amount <= rec.amount);
+                donated_so_far += amt;
+                // No fee is withheld: the creator balance must equal every
+                // stroop donated so far. Any skim would fail this check.
+                prop_assert_eq!(token_client.balance(&creator), donated_so_far);
             }
 
             let profile = registry_client.get_creator(&creator).unwrap();
@@ -3406,7 +3723,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cancelled_proposal_cannot_execute() {
+    fn test_cancelled_proposal_rejects_execution() {
         let env = Env::default();
         env.mock_all_auths();
         let admin1 = Address::generate(&env);
@@ -3454,7 +3771,7 @@ mod tests {
         client.cancel_admin_action(&admin1, &prop_id);
         assert_eq!(
             client.try_approve_admin_action(&admin2, &prop_id),
-            Err(Ok(DonationError::ProposalAlreadyExecuted.into()))
+            Err(Ok(DonationError::ProposalCancelled.into()))
         );
 
         let prop2_id = client.propose_admin_action(&admin1, &AdminAction::Pause);
@@ -3462,7 +3779,7 @@ mod tests {
             .with_mut(|li| li.timestamp = ADMIN_PROPOSAL_TTL_SECONDS + 1);
         assert_eq!(
             client.try_approve_admin_action(&admin2, &prop2_id),
-            Err(Ok(DonationError::ProposalAlreadyExecuted.into()))
+            Err(Ok(DonationError::ProposalExpired.into()))
         );
     }
 
@@ -3500,5 +3817,164 @@ mod tests {
         client.approve_admin_action(&admin2, &prop0);
         client.execute_admin_action(&admin1, &prop0);
         assert!(client.get_proposal(&prop0).unwrap().executed);
+    }
+
+    #[test]
+    fn test_cancelled_proposal_returns_specific_error() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let admins = soroban_sdk::vec![&env, admin.clone()];
+        let (client, _) = deploy_pair(&env, admins, 1, 0);
+
+        let target = Address::generate(&env);
+        let prop_id =
+            client.propose_admin_action(&admin, &AdminAction::SetDonationContract(target));
+
+        client.cancel_admin_action(&admin, &prop_id);
+
+        let prop = client.get_proposal(&prop_id).unwrap();
+        assert!(prop.cancelled);
+        assert!(!prop.executed);
+
+        env.ledger().with_mut(|li| li.timestamp = 10);
+        assert_eq!(
+            client.try_execute_admin_action(&admin, &prop_id),
+            Err(Ok(DonationError::ProposalCancelled.into()))
+        );
+        let prop_after = client.get_proposal(&prop_id).unwrap();
+        assert!(prop_after.cancelled);
+        assert!(!prop_after.executed);
+    }
+
+    #[test]
+    fn test_cancel_requires_threshold_of_non_proposer_admins() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin1 = Address::generate(&env);
+        let admin2 = Address::generate(&env);
+        let admin3 = Address::generate(&env);
+        let admins = soroban_sdk::vec![&env, admin1.clone(), admin2.clone(), admin3.clone()];
+        let (client, _) = deploy_pair(&env, admins, 2, 0);
+
+        let target = Address::generate(&env);
+        let prop_id =
+            client.propose_admin_action(&admin1, &AdminAction::SetDonationContract(target));
+
+        // A single non-proposer request (1 < threshold 2) does not cancel.
+        client.cancel_admin_action(&admin2, &prop_id);
+        assert!(!client.get_proposal(&prop_id).unwrap().cancelled);
+
+        // The second request reaches the threshold: the proposal is cancelled.
+        client.cancel_admin_action(&admin3, &prop_id);
+        assert!(client.get_proposal(&prop_id).unwrap().cancelled);
+    }
+
+    #[test]
+    fn test_timelock_not_elapsed_and_success() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let admins = soroban_sdk::vec![&env, admin.clone()];
+        let (client, _) = deploy_pair(&env, admins, 1, 100);
+
+        let prop_id = client.propose_admin_action(&admin, &AdminAction::Pause);
+
+        // Timelock has not elapsed (now = 0, eta = 100) -> fails with TimelockNotElapsed
+        assert_eq!(
+            client.try_execute_admin_action(&admin, &prop_id),
+            Err(Ok(DonationError::TimelockNotElapsed.into()))
+        );
+
+        // Timelock elapses (now = 100, eta = 100) -> succeeds
+        env.ledger().with_mut(|li| li.timestamp = 100);
+        client.execute_admin_action(&admin, &prop_id);
+        assert!(client.get_proposal(&prop_id).unwrap().executed);
+        assert!(client.is_paused());
+    }
+
+    #[test]
+    fn test_already_approved_and_success() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin1 = Address::generate(&env);
+        let admin2 = Address::generate(&env);
+        let admins = soroban_sdk::vec![&env, admin1.clone(), admin2.clone()];
+        let (client, _) = deploy_pair(&env, admins, 2, 0);
+
+        let prop_id = client.propose_admin_action(&admin1, &AdminAction::Pause);
+
+        // Admin 2 approves once (succeeds)
+        client.approve_admin_action(&admin2, &prop_id);
+
+        // Admin 2 attempts to approve a second time -> fails with AlreadyApproved
+        assert_eq!(
+            client.try_approve_admin_action(&admin2, &prop_id),
+            Err(Ok(DonationError::AlreadyApproved.into()))
+        );
+    }
+
+    #[test]
+    fn test_non_admin_propose_and_approve_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let non_admin = Address::generate(&env);
+        let admins = soroban_sdk::vec![&env, admin.clone()];
+        let (client, _) = deploy_pair(&env, admins, 1, 0);
+
+        // Non-admin propose fails
+        assert_eq!(
+            client.try_propose_admin_action(&non_admin, &AdminAction::Pause),
+            Err(Ok(DonationError::Unauthorized.into()))
+        );
+
+        // Admin proposes
+        let prop_id = client.propose_admin_action(&admin, &AdminAction::Pause);
+
+        // Non-admin approve fails
+        assert_eq!(
+            client.try_approve_admin_action(&non_admin, &prop_id),
+            Err(Ok(DonationError::Unauthorized.into()))
+        );
+
+        // Non-admin execute fails
+        assert_eq!(
+            client.try_execute_admin_action(&non_admin, &prop_id),
+            Err(Ok(DonationError::Unauthorized.into()))
+        );
+    }
+
+    #[test]
+    fn test_set_donation_contract_action() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let admins = soroban_sdk::vec![&env, admin.clone()];
+        let (client, _) = deploy_pair(&env, admins, 1, 0);
+
+        let new_registry = Address::generate(&env);
+        let prop_id = client.propose_admin_action(
+            &admin,
+            &AdminAction::SetDonationContract(new_registry.clone()),
+        );
+        client.execute_admin_action(&admin, &prop_id);
+        assert!(client.get_proposal(&prop_id).unwrap().executed);
+    }
+
+    #[test]
+    fn test_bump_and_bump_subscription_ttl() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let admins = soroban_sdk::vec![&env, admin.clone()];
+        let (client, _) = deploy_pair(&env, admins, 1, 0);
+
+        // bump instance TTL succeeds
+        client.bump();
+
+        // Non-existent subscription bump fails
+        assert!(client.try_bump_subscription(&9999).is_err());
     }
 }

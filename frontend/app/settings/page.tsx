@@ -70,6 +70,7 @@ export default function SettingsPage() {
 
   const [goals, setGoals] = useState<Goal[]>([]);
   const [goalsLoading, setGoalsLoading] = useState(true);
+  const [goalsError, setGoalsError] = useState(false);
   const [creatingGoal, setCreatingGoal] = useState(false);
   const [newGoalTitle, setNewGoalTitle] = useState('');
   const [newGoalDescription, setNewGoalDescription] = useState('');
@@ -82,6 +83,9 @@ export default function SettingsPage() {
   // Goal awaiting confirmation in the delete dialog.
   const [goalToDelete, setGoalToDelete] = useState<Goal | null>(null);
   const [deletingGoal, setDeletingGoal] = useState(false);
+  // Theme editor reports its own unsaved draft state up to the page guard.
+  const [themeDirty, setThemeDirty] = useState(false);
+  const anyDirty = dirty || themeDirty || goalDraft !== null;
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   // Tracks which creator.id the form was last hydrated from, so a refetch
@@ -127,12 +131,14 @@ export default function SettingsPage() {
   // rather than needing auth — only create/edit require the owner's token.
   const fetchGoals = async (username: string) => {
     setGoalsLoading(true);
+    setGoalsError(false);
     try {
       const res = await fetch(`${API_URL}/api/goals/${encodeURIComponent(username)}`);
-      if (!res.ok) return;
+      if (!res.ok) throw new Error('Could not load goals');
       const data = await res.json();
       setGoals(Array.isArray(data) ? data : data.items || []);
     } catch (err) {
+      setGoalsError(true);
       notify.error('Could not load goals', err);
     } finally {
       setGoalsLoading(false);
@@ -260,14 +266,14 @@ export default function SettingsPage() {
   // only covers browser-level navigation, not in-app Link clicks — the App
   // Router has no built-in route-change interceptor for that.
   useEffect(() => {
-    if (!dirty) return;
+    if (!anyDirty) return;
     const handler = (e: BeforeUnloadEvent) => {
       e.preventDefault();
       e.returnValue = '';
     };
     window.addEventListener('beforeunload', handler);
     return () => window.removeEventListener('beforeunload', handler);
-  }, [dirty]);
+  }, [anyDirty]);
 
   const handleFilePick = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -611,6 +617,13 @@ export default function SettingsPage() {
 
               {goalsLoading ? (
                 <Skeleton className="h-16 w-full" />
+              ) : goalsError ? (
+                <div className="card-brutal p-4 space-y-3" role="alert">
+                  <p className="text-sm text-ink font-bold">Could not load goals.</p>
+                  <button type="button" onClick={() => creator && fetchGoals(creator.username)} className="btn-brutal btn-brutal-white text-sm px-3 py-1.5">
+                    Retry
+                  </button>
+                </div>
               ) : goals.length > 0 ? (
                 <ul className="space-y-3">
                   {goals.map((g) => {
@@ -818,7 +831,7 @@ export default function SettingsPage() {
                 <button
                   type="button"
                   onClick={handleCreateGoal}
-                  disabled={creatingGoal}
+                  disabled={creatingGoal || goalsError}
                   className="btn-brutal btn-brutal-primary w-full"
                 >
                   {creatingGoal ? 'Adding…' : 'Add goal'}
@@ -831,6 +844,7 @@ export default function SettingsPage() {
               displayName={creator.displayName || creator.username}
               token={token}
               initialTheme={creator.theme ?? null}
+              onDirtyChange={setThemeDirty}
             />
 
             {/* Social links */}

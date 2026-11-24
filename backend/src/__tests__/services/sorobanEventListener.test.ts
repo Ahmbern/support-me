@@ -147,7 +147,6 @@ describe("SorobanEventListener event processing & reconciliation", () => {
         timestamp: 1713182400n,
         token: "CUSDC...",
         donation_id: 10n,
-        fee_amount: 0n,
         subscription_id: null,
       }),
     };
@@ -166,7 +165,6 @@ describe("SorobanEventListener event processing & reconciliation", () => {
       ledger: 1050,
       txHash: "tx_hash_donated_123",
       donationId: 10,
-      feeAmount: "0",
     });
 
     eventBus.off(DONATION_EVENT, handler);
@@ -194,7 +192,6 @@ describe("SorobanEventListener event processing & reconciliation", () => {
         timestamp: 1713182500n,
         token: "CUSDC...",
         donation_id: 11n,
-        fee_amount: 0n,
         subscription_id: 42n,
       }),
     };
