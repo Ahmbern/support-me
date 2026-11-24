@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { availableAssetCodes } from '@/lib/assets';
 import userEvent from '@testing-library/user-event';
 import type { ImageProps } from 'next/image';
 import LeaderboardPage from '../page';
@@ -190,13 +191,21 @@ describe('LeaderboardPage', () => {
       expect(screen.getAllByText('Alice In Chains').length).toBeGreaterThan(0);
     });
 
-    const usdcButton = screen.getByRole('button', { name: 'USDC' });
-    fireEvent.click(usdcButton);
+    const currencyFilter = screen.getByText('Currency:').parentElement;
+    expect(currencyFilter).not.toBeNull();
+    expect(
+      Array.from(currencyFilter!.querySelectorAll('button')).map((button) => button.textContent)
+    ).toEqual(availableAssetCodes());
 
-    expect(usdcButton).toHaveAttribute('aria-pressed', 'true');
+    const nextCurrency = availableAssetCodes().find((code) => code !== 'XLM');
+    if (!nextCurrency) return;
+    const currencyButton = screen.getByRole('button', { name: nextCurrency });
+    fireEvent.click(currencyButton);
+
+    expect(currencyButton).toHaveAttribute('aria-pressed', 'true');
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith(
-        expect.stringContaining('currency=USDC')
+        expect.stringContaining(`currency=${nextCurrency}`)
       );
     });
   });
@@ -247,6 +256,24 @@ describe('LeaderboardPage', () => {
 
     await waitFor(() => {
       expect(screen.getAllByText('Alice In Chains').length).toBeGreaterThan(0);
+    });
+  });
+
+  it('refetches with the selected timeframe', async () => {
+    render(<LeaderboardPage />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('Alice In Chains').length).toBeGreaterThan(0);
+    });
+
+    const thisWeek = screen.getByRole('button', { name: 'This Week' });
+    fireEvent.click(thisWeek);
+
+    expect(thisWeek).toHaveAttribute('aria-pressed', 'true');
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining('period=week')
+      );
     });
   });
 });

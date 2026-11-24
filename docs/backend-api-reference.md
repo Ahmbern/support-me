@@ -287,13 +287,14 @@ Get the current user's creator profile.
 
 ### GET /api/creators/leaderboard
 
-Get leaderboard for creators or supporters by currency.
+Get leaderboard for creators or supporters by currency and time period.
 
 **Auth Required:** No
 
 **Query Parameters:**
 - `type`: Leaderboard type - `creators` or `supporters`
-- `currency`: Currency code (e.g., `XLM`, `USDC`)
+- `currency`: Currency code (e.g., `XLM`, `USDC`, `USDT`)
+- `period` (optional): Donation period - `all` (default), `month` (current UTC calendar month), or `week` (current UTC week, Monday through Sunday)
 - `page` (optional): Page number (default: 1)
 - `limit` (optional): Items per page (default: 20)
 

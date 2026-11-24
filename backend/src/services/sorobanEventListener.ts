@@ -245,9 +245,6 @@ export class SorobanEventListener {
           value.subscription_id != null
             ? Number(value.subscription_id)
             : undefined;
-        const donor = topics[1] as string;
-        const creator = topics[2] as string;
-        const currency = resolveTokenCurrency(value.token ? String(value.token) : undefined);
 
         const payload: DonationEvent = {
           donor,
