@@ -205,6 +205,12 @@ pub enum DonationError {
     MultiSigRequired = 25,
     ExecutorNotSet = 26,
     Overflow = 27,
+    /// The proposal was cancelled (by its proposer or by threshold admin
+    /// cancellation requests) and can no longer be approved or executed.
+    ProposalCancelled = 28,
+    /// The proposal's lifetime (`created_at + ADMIN_PROPOSAL_TTL_SECONDS`)
+    /// has elapsed and it can no longer be approved or executed.
+    ProposalExpired = 29,
 }
 
 #[contractevent(topics = ["sub_failed"])]
@@ -454,11 +460,11 @@ impl DonationContract {
             soroban_sdk::panic_with_error!(&env, DonationError::ProposalAlreadyExecuted);
         }
         if proposal.cancelled {
-            soroban_sdk::panic_with_error!(&env, DonationError::ProposalAlreadyExecuted);
+            soroban_sdk::panic_with_error!(&env, DonationError::ProposalCancelled);
         }
         let now = env.ledger().timestamp();
         if now > proposal.expires_at {
-            soroban_sdk::panic_with_error!(&env, DonationError::ProposalAlreadyExecuted);
+            soroban_sdk::panic_with_error!(&env, DonationError::ProposalExpired);
         }
 
         let has_approved: bool = env
@@ -564,7 +570,7 @@ impl DonationContract {
             soroban_sdk::panic_with_error!(&env, DonationError::ProposalAlreadyExecuted);
         }
         if proposal.cancelled {
-            soroban_sdk::panic_with_error!(&env, DonationError::ProposalAlreadyExecuted);
+            soroban_sdk::panic_with_error!(&env, DonationError::ProposalCancelled);
         }
 
         let threshold: u32 = match env.storage().instance().get(&THRESHOLD_KEY) {
@@ -577,7 +583,7 @@ impl DonationContract {
 
         let now = env.ledger().timestamp();
         if now > proposal.expires_at {
-            soroban_sdk::panic_with_error!(&env, DonationError::ProposalAlreadyExecuted);
+            soroban_sdk::panic_with_error!(&env, DonationError::ProposalExpired);
         }
         if now < proposal.eta {
             soroban_sdk::panic_with_error!(&env, DonationError::TimelockNotElapsed);
@@ -3177,7 +3183,7 @@ mod tests {
         client.cancel_admin_action(&admin1, &prop_id);
         assert_eq!(
             client.try_approve_admin_action(&admin2, &prop_id),
-            Err(Ok(DonationError::ProposalAlreadyExecuted.into()))
+            Err(Ok(DonationError::ProposalCancelled.into()))
         );
 
         let prop2_id = client.propose_admin_action(&admin1, &AdminAction::Pause);
@@ -3185,7 +3191,7 @@ mod tests {
             .with_mut(|li| li.timestamp = ADMIN_PROPOSAL_TTL_SECONDS + 1);
         assert_eq!(
             client.try_approve_admin_action(&admin2, &prop2_id),
-            Err(Ok(DonationError::ProposalAlreadyExecuted.into()))
+            Err(Ok(DonationError::ProposalExpired.into()))
         );
     }
 
