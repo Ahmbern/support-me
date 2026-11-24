@@ -232,7 +232,6 @@ export class SorobanEventListener {
           timestamp: bigint;
           token?: string;
           donation_id?: bigint | number;
-          fee_amount?: bigint;
           subscription_id?: bigint | number | null;
         };
 
@@ -242,8 +241,6 @@ export class SorobanEventListener {
 
         const donationId =
           value.donation_id != null ? Number(value.donation_id) : undefined;
-        const feeAmount =
-          value.fee_amount != null ? value.fee_amount.toString() : undefined;
         const subId =
           value.subscription_id != null
             ? Number(value.subscription_id)
@@ -262,7 +259,6 @@ export class SorobanEventListener {
           ledger: evt.ledger,
           txHash: evt.txHash,
           donationId,
-          feeAmount,
           subscriptionId: subId,
         };
 

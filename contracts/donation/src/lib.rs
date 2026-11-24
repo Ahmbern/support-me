@@ -77,7 +77,6 @@ pub struct DonatedEvent {
     pub donation_id: u32,
     pub token: Address,
     pub amount: i128,
-    pub fee_amount: i128,
     pub memo: String,
     pub timestamp: u64,
     pub subscription_id: Option<u64>,
@@ -1012,7 +1011,6 @@ impl DonationContract {
             donor: donor.clone(),
             creator: creator.clone(),
             amount,
-            fee_amount: 0,
             memo: memo.clone(),
             timestamp: env.ledger().timestamp(),
         };
@@ -1040,7 +1038,6 @@ impl DonationContract {
             donation_id: counter,
             token,
             amount,
-            fee_amount: 0,
             memo,
             timestamp: env.ledger().timestamp(),
             subscription_id: None,
@@ -1283,7 +1280,6 @@ impl DonationContract {
             donor: subscription.supporter.clone(),
             creator: subscription.creator.clone(),
             amount: subscription.amount,
-            fee_amount: 0,
             memo: memo.clone(),
             timestamp: now,
         };
@@ -1310,7 +1306,6 @@ impl DonationContract {
             donation_id: counter,
             token: subscription.token.clone(),
             amount: subscription.amount,
-            fee_amount: 0,
             memo,
             timestamp: now,
             subscription_id: Some(subscription_id),
@@ -2663,11 +2658,10 @@ mod tests {
             );
             donated_so_far += amt;
 
-            // Invariant 1: Fee never exceeds donation amount
-            assert!(record.fee_amount <= record.amount);
-            // Invariant 2: Gross donation amount is conserved
-            let creator_received = record.amount - record.fee_amount;
-            assert_eq!(creator_received + record.fee_amount, record.amount);
+            // Invariant 1: the stored record matches the donation exactly.
+            // There is no fee: the creator receives the full amount, so the
+            // record amount must equal the amount just donated.
+            assert_eq!(record.amount, amt);
 
             // Invariant 3: Balances update exactly by transferred amount
             assert_eq!(
@@ -2985,6 +2979,9 @@ mod tests {
 
             let total_donation = amount1 + amount2 + amount3;
             StellarAssetClient::new(&env, &token_address).mint(&donor, &(total_donation + 500));
+            let token_client = token::Client::new(&env, &token_address);
+
+            let mut donated_so_far = 0i128;
 
             for amt in [amount1, amount2, amount3] {
                 let rec = donation_client.donate(
@@ -2995,7 +2992,10 @@ mod tests {
                     &String::from_bytes(&env, b"prop"),
                 );
                 prop_assert_eq!(rec.amount, amt);
-                prop_assert!(rec.fee_amount <= rec.amount);
+                donated_so_far += amt;
+                // No fee is withheld: the creator balance must equal every
+                // stroop donated so far. Any skim would fail this check.
+                prop_assert_eq!(token_client.balance(&creator), donated_so_far);
             }
 
             let profile = registry_client.get_creator(&creator).unwrap();
