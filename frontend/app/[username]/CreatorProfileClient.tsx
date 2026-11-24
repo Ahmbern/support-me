@@ -994,7 +994,7 @@ function CreatorProfileView({ username, locale, onLocaleChange }: CreatorProfile
                         <label htmlFor="donation-amount" className="block text-sm font-bold text-ink">
                           {t('amountLabel', { asset: assetCode })}
                         </label>
-                        <span className="text-xs text-muted font-bold" data-testid="min-donation-label">
+                        <span id="donation-amount-hint" className="text-xs text-muted font-bold" data-testid="min-donation-label">
                           {t('minDonation', { min: MIN_DONATION_AMOUNT, asset: assetCode })}
                         </span>
                       </div>
@@ -1003,6 +1003,8 @@ function CreatorProfileView({ username, locale, onLocaleChange }: CreatorProfile
                         type="number"
                         min={MIN_DONATION_AMOUNT}
                         step="0.1"
+                        aria-invalid={!isAmountValid}
+                        aria-describedby={isAmountValid ? 'donation-amount-hint' : 'donation-amount-hint donation-amount-error'}
                         value={donationAmount}
                         onChange={(e) => {
                           setDonationAmount(e.target.value);
@@ -1011,7 +1013,7 @@ function CreatorProfileView({ username, locale, onLocaleChange }: CreatorProfile
                         className={`input-brutal ${!isAmountValid ? 'border-red-500' : ''}`}
                       />
                       {!isAmountValid && (
-                        <p className="text-xs text-red-600 font-bold mt-1" role="alert">
+                        <p id="donation-amount-error" className="text-xs text-red-600 font-bold mt-1" role="alert">
                           {donationAmount.trim() === ''
                             ? t('amountRequired')
                             : t('amountInvalid')}
@@ -1068,20 +1070,22 @@ function CreatorProfileView({ username, locale, onLocaleChange }: CreatorProfile
                         onChange={(e) => setDonationMessage(e.target.value)}
                         placeholder={t('messagePlaceholder')}
                         disabled={recurring}
+                        aria-invalid={!recurring && memoTooLong}
+                        aria-describedby={recurring ? 'donation-message-recurring-hint' : memoTooLong ? 'donation-message-counter donation-message-error' : 'donation-message-counter'}
                         className="input-brutal text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                         rows={3}
                       />
                       {recurring ? (
-                        <p className="text-xs text-muted mt-1 font-medium" data-testid="recurring-message-hint">
+                        <p id="donation-message-recurring-hint" className="text-xs text-muted mt-1 font-medium" data-testid="recurring-message-hint">
                           {t('recurringMessageHint')}
                         </p>
                       ) : (
-                        <p className="text-xs text-muted mt-1 font-medium">
+                        <p id="donation-message-counter" aria-live="polite" className="text-xs text-muted mt-1 font-medium">
                           {memoBytes}/{MAX_MEMO_LENGTH} bytes
                         </p>
                       )}
                       {memoTooLong && (
-                        <p role="alert" className="text-xs text-red-600 mt-1">
+                        <p id="donation-message-error" role="alert" className="text-xs text-red-600 mt-1">
                           Message must be {MAX_MEMO_LENGTH} bytes or fewer.
                         </p>
                       )}
@@ -1100,7 +1104,9 @@ function CreatorProfileView({ username, locale, onLocaleChange }: CreatorProfile
 
                       {recurring && (
                         <div className="flex items-center gap-1.5">
+                          <label htmlFor="donation-interval" className="sr-only">{t('intervalLabel')}</label>
                           <select
+                            id="donation-interval"
                             value={intervalChoice}
                             onChange={(e) => setIntervalChoice(e.target.value as typeof intervalChoice)}
                             className="input-brutal text-sm py-1.5 w-auto min-h-[44px]"
@@ -1119,7 +1125,7 @@ function CreatorProfileView({ username, locale, onLocaleChange }: CreatorProfile
                               onChange={(e) => setCustomDays(e.target.value)}
                               aria-label={t('daysBetweenChargesLabel')}
                               title={t('daysBetweenChargesTitle', { max: MAX_CHARGE_INTERVAL_DAYS })}
-                              className="input-brutal text-sm py-1.5 w-14 min-h-[44px]"
+                              className="input-brutal text-sm py-1.5 w-20 min-h-[44px]"
                             />
                           )}
                         </div>
