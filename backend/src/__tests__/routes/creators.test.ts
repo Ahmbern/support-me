@@ -584,6 +584,54 @@ describe("GET /api/creators/leaderboard (#16)", () => {
     expect(mockedPrisma.creator.findMany).not.toHaveBeenCalled();
   });
 
+  it("filters leaderboard donations by period and keeps period results separate in cache", async () => {
+    mockedPrisma.donation.groupBy.mockImplementation(
+      async ({ where }: { where: { createdAt?: { gte: Date } } }) => {
+        const weeklyEntries = [
+          { senderAddress: "GWEEK", _sum: { amount: 50 }, _count: { _all: 1 } },
+        ];
+        return where.createdAt
+          ? weeklyEntries
+          : [...weeklyEntries, { senderAddress: "GOLD", _sum: { amount: 100 }, _count: { _all: 1 } }];
+      }
+    );
+
+    const weekResponse = await request(app).get(
+      "/api/creators/leaderboard?type=supporters&period=week"
+    );
+    const allTimeResponse = await request(app).get(
+      "/api/creators/leaderboard?type=supporters&period=all"
+    );
+    const monthResponse = await request(app).get(
+      "/api/creators/leaderboard?type=supporters&period=month"
+    );
+
+    expect(weekResponse.status).toBe(200);
+    expect(allTimeResponse.status).toBe(200);
+    expect(monthResponse.status).toBe(200);
+    expect(weekResponse.body.items.map((item: { senderAddress: string }) => item.senderAddress)).toEqual([
+      "GWEEK",
+    ]);
+    expect(allTimeResponse.body.items.map((item: { senderAddress: string }) => item.senderAddress)).toEqual([
+      "GOLD",
+      "GWEEK",
+    ]);
+    expect(mockedPrisma.donation.groupBy).toHaveBeenCalledTimes(3);
+
+    const weekWhere = mockedPrisma.donation.groupBy.mock.calls[0][0].where;
+    const weekStart = weekWhere.createdAt.gte as Date;
+    expect(weekStart).toBeInstanceOf(Date);
+    expect(weekStart.getUTCDay()).toBe(1);
+    expect(weekStart.getUTCHours()).toBe(0);
+
+    const allTimeWhere = mockedPrisma.donation.groupBy.mock.calls[1][0].where;
+    expect(allTimeWhere).not.toHaveProperty("createdAt");
+
+    const monthStart = mockedPrisma.donation.groupBy.mock.calls[2][0].where.createdAt.gte as Date;
+    expect(monthStart.getUTCDate()).toBe(1);
+    expect(monthStart.getUTCHours()).toBe(0);
+  });
+
   it("ranks a non-default currency independently, never mixing totals across currencies", async () => {
     mockedPrisma.donation.groupBy.mockResolvedValue([
       { creatorId: 1, _sum: { amount: 42 }, _count: { _all: 1 } },
