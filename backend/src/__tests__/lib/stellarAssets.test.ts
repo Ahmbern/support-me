@@ -6,14 +6,14 @@ const ORIGINAL_ENV = { ...process.env };
 // A valid StrKey issuer — the SDK rejects a checksum-invalid address.
 const ISSUER = Keypair.random().publicKey();
 
-vi.mock("@sentry/node", () => ({
-  captureMessage: vi.fn(),
+jest.mock("@sentry/node", () => ({
+  captureMessage: jest.fn(),
 }));
 
 afterEach(() => {
   process.env = { ...ORIGINAL_ENV };
   resetAssetMappingCache();
-  vi.clearAllMocks();
+  jest.clearAllMocks();
 });
 
 describe("resolveTokenCurrency", () => {

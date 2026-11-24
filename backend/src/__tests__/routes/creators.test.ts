@@ -592,7 +592,10 @@ describe("GET /api/creators/leaderboard (#16)", () => {
         ];
         return where.createdAt
           ? weeklyEntries
-          : [...weeklyEntries, { senderAddress: "GOLD", _sum: { amount: 100 }, _count: { _all: 1 } }];
+          : [
+              { senderAddress: "GOLD", _sum: { amount: 100 }, _count: { _all: 1 } },
+              ...weeklyEntries,
+            ];
       }
     );
 
