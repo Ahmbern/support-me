@@ -15,6 +15,7 @@ import { DonationHistorySkeleton } from '@/components/DonationHistorySkeleton';
 import { TipChart } from '@/components/TipChart';
 import { ShareCard } from '@/components/ShareCard';
 import { ShareModal } from '@/components/ShareModal';
+import { InlineError } from '@/components/InlineError';
 import { QrCodeCard } from '@/components/QrCodeCard';
 import { DashboardStats, type CreatorStats } from '@/components/DashboardStats';
 import { usePrices } from '@/lib/usePrices';
@@ -86,16 +87,21 @@ export default function DashboardPage() {
   }, [donations]);
 
   const fetchData = useCallback(async () => {
-    if (!user || !token || !creator) return;
+    if (!user || !creator) return;
+
+    const authHeaders: Record<string, string> = {};
+    if (token) authHeaders['Authorization'] = `Bearer ${token}`;
 
     setError('');
     try {
       const [resDonations, resWithdrawals] = await Promise.all([
         fetch(`${API_URL}/api/donations?creatorUsername=${encodeURIComponent(creator.username)}&page=1&limit=20`, {
-          headers: { 'Authorization': `Bearer ${token}` },
+          credentials: 'include',
+          headers: authHeaders,
         }),
         fetch(`${API_URL}/api/withdrawals?creatorUsername=${encodeURIComponent(creator.username)}`, {
-          headers: { 'Authorization': `Bearer ${token}` },
+          credentials: 'include',
+          headers: authHeaders,
         }),
       ]);
 
@@ -130,13 +136,13 @@ export default function DashboardPage() {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
-
+  
   const [exporting, setExporting] = useState(false);
 
   // Exports the creator's full donation history (not just the pages loaded on
   // screen) by walking every page of the API, then downloads it as a CSV.
   const exportDonationsCsv = async () => {
-    if (!creator || !token || exporting) return;
+    if (!creator || exporting) return;
     setExporting(true);
     try {
       const all: Donation[] = [];
@@ -145,7 +151,7 @@ export default function DashboardPage() {
       for (let page = 1; page <= maxPages; page++) {
         const response = await fetch(
           `${API_URL}/api/donations?creatorUsername=${encodeURIComponent(creator.username)}&page=${page}&limit=${pageSize}`,
-          { headers: { Authorization: `Bearer ${token}` } }
+          { credentials: 'include', headers: token ? { Authorization: `Bearer ${token}` } : {} }
         );
         if (!response.ok) throw new Error('The server returned an error. Please try again.');
         const data = await response.json();
@@ -162,7 +168,7 @@ export default function DashboardPage() {
   };
 
   const loadMoreDonations = async () => {
-    if (!creator || !token || loadingMoreDonations || !hasMoreDonations) return;
+    if (!creator || loadingMoreDonations || !hasMoreDonations) return;
     setLoadingMoreDonations(true);
     setLoadMoreError(null);
     if (typeof window !== 'undefined') {
@@ -172,7 +178,7 @@ export default function DashboardPage() {
       const nextPage = donationPage + 1;
       const response = await fetch(
         `${API_URL}/api/donations?creatorUsername=${encodeURIComponent(creator.username)}&page=${nextPage}&limit=20`,
-        { headers: { 'Authorization': `Bearer ${token}` } }
+        { credentials: 'include', headers: token ? { 'Authorization': `Bearer ${token}` } : {} }
       );
       if (!response.ok) throw new Error('The server returned an error. Please try again.');
       const data = await response.json();
@@ -235,10 +241,13 @@ export default function DashboardPage() {
   // Dashboard metrics (#224) are aggregated server-side over every verified
   // donation, so they stay correct beyond the first page of history.
   useEffect(() => {
-    if (!token || !creator) return;
+    if (!creator) return;
     let cancelled = false;
+    const statsHeaders: Record<string, string> = {};
+    if (token) statsHeaders['Authorization'] = `Bearer ${token}`;
     fetch(`${API_URL}/api/creators/me/stats`, {
-      headers: { Authorization: `Bearer ${token}` },
+      credentials: 'include',
+      headers: statsHeaders,
     })
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
@@ -399,16 +408,11 @@ export default function DashboardPage() {
           </div>
 
           {error && (
-            <div className="card-brutal bg-brand-pink p-4 mb-6 text-ink font-bold flex items-center justify-between gap-4">
-              <span>{error}</span>
-              <button
-                type="button"
-                onClick={() => fetchData()}
-                className="px-3 py-1 bg-red-600 text-white font-bold rounded text-xs hover:bg-red-700 transition-colors shrink-0"
-              >
-                Retry
-              </button>
-            </div>
+            <InlineError
+              className="card-brutal bg-brand-pink p-4 mb-6 text-ink font-bold"
+              message={error}
+              onRetry={() => fetchData()}
+            />
           )}
 
           {donations.length === 0 && !error ? (
@@ -519,7 +523,7 @@ export default function DashboardPage() {
                           +{donation.amount} {donation.currency}
                         </span>
                         {usd && (
-                          <span className="text-xs text-muted whitespace-nowrap tabular-nums">{usd}</span>
+                          <span className="text-xs text-muted whitespace-nowrap-tabular-nums">{usd}</span>
                         )}
                         <span className="text-xs text-muted font-mono whitespace-nowrap">
                           {donation.senderAddress.slice(0, 6)}…{donation.senderAddress.slice(-4)}
@@ -608,16 +612,12 @@ export default function DashboardPage() {
               </ul>
             )}
             {loadMoreError && (
-              <div className="mt-4 p-3 bg-red-50 border-2 border-red-500 rounded-lg flex items-center justify-between gap-2 text-sm text-red-700">
-                <span>{loadMoreError}</span>
-                <button
-                  type="button"
-                  onClick={loadMoreDonations}
-                  className="px-3 py-1 bg-red-600 text-white font-bold rounded text-xs hover:bg-red-700 transition-colors"
-                >
-                  Retry
-                </button>
-              </div>
+              <InlineError
+                className="mt-4 p-3 bg-red-50 border-2 border-red-500 rounded-lg text-sm text-red-700"
+                message={loadMoreError}
+                onRetry={loadMoreDonations}
+                compact
+              />
             )}
 
             {loadingMoreDonations && (
