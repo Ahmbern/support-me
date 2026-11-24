@@ -37,7 +37,7 @@ interface AuthContextType {
   completeTwitterLogin: (code: string, state: string) => Promise<LoginResult>;
   requestMagicLink: (email: string) => Promise<void>;
   verifyMagicLink: (token: string) => Promise<LoginResult>;
-  logout: () => void;
+  logout: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -64,10 +64,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const syncSessionFromStorage = () => {
       const savedToken = localStorage.getItem('authToken');
       const savedUser = localStorage.getItem('authUser');
-      if (savedToken && savedUser) {
+
+      // The session token lives in an httpOnly cookie (#366), so it is not
+      // (and must not be) persisted in localStorage. The user profile is the
+      // only piece we keep client-side, so a reload must restore the session
+      // from `authUser` alone — requiring `authToken` here was the regression
+      // that dropped every signed-in session on refresh.
+      if (savedUser) {
         try {
-          setToken(savedToken);
-          setUser(JSON.parse(savedUser));
+          const parsed = JSON.parse(savedUser);
+          if (!isStoredUser(parsed)) throw new Error('invalid user');
+          setUser(parsed);
+          setToken(savedToken && savedToken.length > 0 ? savedToken : null);
         } catch {
           // Clear invalid stored data
           localStorage.removeItem('authToken');
@@ -76,6 +84,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setUser(null);
         }
         return;
+      }
+
+      // A stray token without a user profile is not a usable session.
+      if (savedToken) {
+        localStorage.removeItem('authToken');
       }
       setToken(null);
       setUser(null);
@@ -202,21 +215,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return persistSession(data);
   };
 
-  const logout = () => {
+  const logout = async () => {
+    const res = await fetch(`${API_URL}/api/auth/logout`, {
+      method: 'POST',
+      credentials: 'include',
+    });
+    if (!res.ok) {
+      throw new Error('The server could not end your session.');
+    }
+
     setUser(null);
     setToken(null);
     localStorage.removeItem('authToken');
     localStorage.removeItem('authUser');
-    try {
-      const p = fetch(`${API_URL}/api/auth/logout`, {
-        method: 'POST',
-        credentials: 'include',
-      });
-      if (p && typeof p.catch === 'function') {
-        p.catch(() => {});
-      }
-    } catch {}
-    disconnectWallet().catch(() => {});
+    void disconnectWallet().catch(() => {});
   };
 
   return (

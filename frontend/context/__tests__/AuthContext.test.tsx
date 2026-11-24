@@ -120,14 +120,35 @@ describe('AuthContext', () => {
     const { result } = renderHook(() => useAuth(), { wrapper: AuthProvider });
     await waitFor(() => expect(result.current.loading).toBe(false));
 
-    act(() => {
-      result.current.logout();
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await act(async () => {
+      await result.current.logout();
     });
 
     expect(result.current.user).toBeNull();
     expect(result.current.token).toBeNull();
     expect(localStorage.getItem('authToken')).toBeNull();
     expect(mockDisconnectWallet).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['network failure', 'server failure'])('keeps the local session on logout %s', async (failure) => {
+    const user = { id: 1, walletAddress: 'GABC' };
+    localStorage.setItem('authToken', 'saved-token');
+    localStorage.setItem('authUser', JSON.stringify(user));
+    const { result } = renderHook(() => useAuth(), { wrapper: AuthProvider });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    if (failure === 'network failure') {
+      vi.mocked(fetch).mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    } else {
+      vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 503 }));
+    }
+
+    await expect(result.current.logout()).rejects.toThrow();
+    expect(result.current.user).toEqual(user);
+    expect(result.current.token).toBe('saved-token');
+    expect(localStorage.getItem('authUser')).toBe(JSON.stringify(user));
+    expect(mockDisconnectWallet).not.toHaveBeenCalled();
   });
 
   describe('Twitter OAuth (#10)', () => {

@@ -8,17 +8,23 @@ export interface CreatorSummary {
   donationGoal: number | null;
 }
 
-// Server-side only, purely for building link-preview metadata and images —
-// the client component does its own fetch (with live SSE updates) for the
+type CreatorSummaryResult =
+  | { status: 'found'; creator: CreatorSummary }
+  | { status: 'not-found' | 'unavailable'; creator: null };
+
+// Server-side lookup for the page, metadata, and preview images.
+// The client component does its own fetch (with live SSE updates) for the
 // actual page. Next dedupes/caches this fetch across metadata and image routes.
-export async function fetchCreatorSummary(username: string): Promise<CreatorSummary | null> {
+export async function fetchCreatorSummary(username: string): Promise<CreatorSummaryResult> {
   try {
     const res = await fetch(`${API_URL}/api/creators/${encodeURIComponent(username)}`, {
       next: { revalidate: 60 },
     });
-    if (!res.ok) return null;
-    return res.json();
+    if (res.status === 404) return { status: 'not-found', creator: null };
+    if (!res.ok) return { status: 'unavailable', creator: null };
+    const creator: CreatorSummary = await res.json();
+    return { status: 'found', creator };
   } catch {
-    return null;
+    return { status: 'unavailable', creator: null };
   }
 }

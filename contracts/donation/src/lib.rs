@@ -119,6 +119,7 @@ pub struct ProposalCreatedEvent {
     #[topic]
     pub proposer: Address,
     pub eta: u64,
+    pub action: AdminAction,
 }
 
 /// Emitted when an admin proposal receives an approval.
@@ -148,6 +149,41 @@ pub struct ProposalCancelledEvent {
     pub proposal_id: u64,
     #[topic]
     pub cancelled_by: Address,
+}
+
+/// Emitted when an admin is added to the multisig set.
+#[contractevent(topics = ["admin_added"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminAddedEvent {
+    #[topic]
+    pub admin: Address,
+    pub total_admins: u32,
+}
+
+/// Emitted when an admin is removed from the multisig set.
+#[contractevent(topics = ["admin_removed"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminRemovedEvent {
+    #[topic]
+    pub admin: Address,
+    pub total_admins: u32,
+}
+
+/// Emitted when the multisig approval threshold changes.
+#[contractevent(topics = ["threshold_chg"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ThresholdChangedEvent {
+    pub old_threshold: u32,
+    pub new_threshold: u32,
+}
+
+/// Emitted when the registry / donation-contract address is repointed.
+#[contractevent(topics = ["registry_chg"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegistryChangedEvent {
+    pub old_registry: Option<Address>,
+    #[topic]
+    pub new_registry: Address,
 }
 
 #[contractevent(topics = ["goal_upd"])]
@@ -204,6 +240,12 @@ pub enum DonationError {
     MultiSigRequired = 25,
     ExecutorNotSet = 26,
     Overflow = 27,
+    /// The proposal was cancelled (by its proposer or by threshold admin
+    /// cancellation requests) and can no longer be approved or executed.
+    ProposalCancelled = 28,
+    /// The proposal's lifetime (`created_at + ADMIN_PROPOSAL_TTL_SECONDS`)
+    /// has elapsed and it can no longer be approved or executed.
+    ProposalExpired = 29,
 }
 
 #[contractevent(topics = ["sub_failed"])]
@@ -453,11 +495,11 @@ impl DonationContract {
             soroban_sdk::panic_with_error!(&env, DonationError::ProposalAlreadyExecuted);
         }
         if proposal.cancelled {
-            soroban_sdk::panic_with_error!(&env, DonationError::ProposalAlreadyExecuted);
+            soroban_sdk::panic_with_error!(&env, DonationError::ProposalCancelled);
         }
         let now = env.ledger().timestamp();
         if now > proposal.expires_at {
-            soroban_sdk::panic_with_error!(&env, DonationError::ProposalAlreadyExecuted);
+            soroban_sdk::panic_with_error!(&env, DonationError::ProposalExpired);
         }
 
         let has_approved: bool = env
@@ -563,7 +605,7 @@ impl DonationContract {
             soroban_sdk::panic_with_error!(&env, DonationError::ProposalAlreadyExecuted);
         }
         if proposal.cancelled {
-            soroban_sdk::panic_with_error!(&env, DonationError::ProposalAlreadyExecuted);
+            soroban_sdk::panic_with_error!(&env, DonationError::ProposalCancelled);
         }
 
         let threshold: u32 = match env.storage().instance().get(&THRESHOLD_KEY) {
@@ -576,7 +618,7 @@ impl DonationContract {
 
         let now = env.ledger().timestamp();
         if now > proposal.expires_at {
-            soroban_sdk::panic_with_error!(&env, DonationError::ProposalAlreadyExecuted);
+            soroban_sdk::panic_with_error!(&env, DonationError::ProposalExpired);
         }
         if now < proposal.eta {
             soroban_sdk::panic_with_error!(&env, DonationError::TimelockNotElapsed);
@@ -593,13 +635,24 @@ impl DonationContract {
                 .publish(&env);
             }
             AdminAction::SetDonationContract(target) => {
+                let old: Option<Address> = env.storage().instance().get(&REGISTRY_KEY);
                 env.storage().instance().set(&REGISTRY_KEY, &target);
+                RegistryChangedEvent {
+                    old_registry: old,
+                    new_registry: target,
+                }
+                .publish(&env);
             }
             AdminAction::AddAdmin(new_admin) => {
                 let mut admins: Vec<Address> = env.storage().instance().get(&ADMINS_KEY).unwrap();
                 if !Self::contains_address(&admins, &new_admin) {
-                    admins.push_back(new_admin);
+                    admins.push_back(new_admin.clone());
                     env.storage().instance().set(&ADMINS_KEY, &admins);
+                    AdminAddedEvent {
+                        admin: new_admin,
+                        total_admins: admins.len(),
+                    }
+                    .publish(&env);
                 }
             }
             AdminAction::RemoveAdmin(old_admin) => {
@@ -619,6 +672,11 @@ impl DonationContract {
                     soroban_sdk::panic_with_error!(&env, DonationError::ThresholdExceedsAdmins);
                 }
                 env.storage().instance().set(&ADMINS_KEY, &new_admins);
+                AdminRemovedEvent {
+                    admin: old_admin.clone(),
+                    total_admins: new_admins.len(),
+                }
+                .publish(&env);
 
                 // #284: a removed primary admin must lose every privilege
                 // the legacy single-admin shortcuts (`set_executor`, token
@@ -640,7 +698,13 @@ impl DonationContract {
                 if new_threshold == 0 || new_threshold > admins.len() {
                     soroban_sdk::panic_with_error!(&env, DonationError::InvalidThreshold);
                 }
+                let old: u32 = env.storage().instance().get(&THRESHOLD_KEY).unwrap_or(0);
                 env.storage().instance().set(&THRESHOLD_KEY, &new_threshold);
+                ThresholdChangedEvent {
+                    old_threshold: old,
+                    new_threshold,
+                }
+                .publish(&env);
             }
             AdminAction::Pause => {
                 env.storage().instance().set(&PAUSED_KEY, &true);
@@ -3177,7 +3241,7 @@ mod tests {
         client.cancel_admin_action(&admin1, &prop_id);
         assert_eq!(
             client.try_approve_admin_action(&admin2, &prop_id),
-            Err(Ok(DonationError::ProposalAlreadyExecuted.into()))
+            Err(Ok(DonationError::ProposalCancelled.into()))
         );
 
         let prop2_id = client.propose_admin_action(&admin1, &AdminAction::Pause);
@@ -3185,7 +3249,7 @@ mod tests {
             .with_mut(|li| li.timestamp = ADMIN_PROPOSAL_TTL_SECONDS + 1);
         assert_eq!(
             client.try_approve_admin_action(&admin2, &prop2_id),
-            Err(Ok(DonationError::ProposalAlreadyExecuted.into()))
+            Err(Ok(DonationError::ProposalExpired.into()))
         );
     }
 
@@ -3223,5 +3287,162 @@ mod tests {
         client.approve_admin_action(&admin2, &prop0);
         client.execute_admin_action(&admin1, &prop0);
         assert!(client.get_proposal(&prop0).unwrap().executed);
+    }
+
+    #[test]
+    fn test_cancelled_proposal_cannot_execute() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let admins = soroban_sdk::vec![&env, admin.clone()];
+        let (client, _) = deploy_pair(&env, admins, 1, 0);
+
+        let target = Address::generate(&env);
+        let prop_id = client.propose_admin_action(&admin, &AdminAction::SetDonationContract(target));
+
+        client.cancel_admin_action(&admin, &prop_id);
+
+        let prop = client.get_proposal(&prop_id).unwrap();
+        assert!(prop.cancelled);
+        assert!(!prop.executed);
+
+        env.ledger().with_mut(|li| li.timestamp = 10);
+        assert_eq!(
+            client.try_execute_admin_action(&admin, &prop_id),
+            Err(Ok(DonationError::ProposalAlreadyExecuted.into()))
+        );
+        let prop_after = client.get_proposal(&prop_id).unwrap();
+        assert!(prop_after.cancelled);
+        assert!(!prop_after.executed);
+    }
+
+    #[test]
+    fn test_cancel_requires_threshold_of_non_proposer_admins() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin1 = Address::generate(&env);
+        let admin2 = Address::generate(&env);
+        let admin3 = Address::generate(&env);
+        let admins = soroban_sdk::vec![&env, admin1.clone(), admin2.clone(), admin3.clone()];
+        let (client, _) = deploy_pair(&env, admins, 2, 0);
+
+        let target = Address::generate(&env);
+        let prop_id = client.propose_admin_action(&admin1, &AdminAction::SetDonationContract(target));
+
+        // A single non-proposer request (1 < threshold 2) does not cancel.
+        client.cancel_admin_action(&admin2, &prop_id);
+        assert!(!client.get_proposal(&prop_id).unwrap().cancelled);
+
+        // The second request reaches the threshold: the proposal is cancelled.
+        client.cancel_admin_action(&admin3, &prop_id);
+        assert!(client.get_proposal(&prop_id).unwrap().cancelled);
+    }
+
+    #[test]
+    fn test_timelock_not_elapsed_and_success() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let admins = soroban_sdk::vec![&env, admin.clone()];
+        let (client, _) = deploy_pair(&env, admins, 1, 100);
+
+        let prop_id = client.propose_admin_action(&admin, &AdminAction::Pause);
+
+        // Timelock has not elapsed (now = 0, eta = 100) -> fails with TimelockNotElapsed
+        assert_eq!(
+            client.try_execute_admin_action(&admin, &prop_id),
+            Err(Ok(DonationError::TimelockNotElapsed.into()))
+        );
+
+        // Timelock elapses (now = 100, eta = 100) -> succeeds
+        env.ledger().with_mut(|li| li.timestamp = 100);
+        client.execute_admin_action(&admin, &prop_id);
+        assert!(client.get_proposal(&prop_id).unwrap().executed);
+        assert!(client.is_paused());
+    }
+
+    #[test]
+    fn test_already_approved_and_success() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin1 = Address::generate(&env);
+        let admin2 = Address::generate(&env);
+        let admins = soroban_sdk::vec![&env, admin1.clone(), admin2.clone()];
+        let (client, _) = deploy_pair(&env, admins, 2, 0);
+
+        let prop_id = client.propose_admin_action(&admin1, &AdminAction::Pause);
+
+        // Admin 2 approves once (succeeds)
+        client.approve_admin_action(&admin2, &prop_id);
+
+        // Admin 2 attempts to approve a second time -> fails with AlreadyApproved
+        assert_eq!(
+            client.try_approve_admin_action(&admin2, &prop_id),
+            Err(Ok(DonationError::AlreadyApproved.into()))
+        );
+    }
+
+    #[test]
+    fn test_non_admin_propose_and_approve_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let non_admin = Address::generate(&env);
+        let admins = soroban_sdk::vec![&env, admin.clone()];
+        let (client, _) = deploy_pair(&env, admins, 1, 0);
+
+        // Non-admin propose fails
+        assert_eq!(
+            client.try_propose_admin_action(&non_admin, &AdminAction::Pause),
+            Err(Ok(DonationError::Unauthorized.into()))
+        );
+
+        // Admin proposes
+        let prop_id = client.propose_admin_action(&admin, &AdminAction::Pause);
+
+        // Non-admin approve fails
+        assert_eq!(
+            client.try_approve_admin_action(&non_admin, &prop_id),
+            Err(Ok(DonationError::Unauthorized.into()))
+        );
+
+        // Non-admin execute fails
+        assert_eq!(
+            client.try_execute_admin_action(&non_admin, &prop_id),
+            Err(Ok(DonationError::Unauthorized.into()))
+        );
+    }
+
+    #[test]
+    fn test_set_donation_contract_action() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let admins = soroban_sdk::vec![&env, admin.clone()];
+        let (client, _) = deploy_pair(&env, admins, 1, 0);
+
+        let new_registry = Address::generate(&env);
+        let prop_id = client.propose_admin_action(
+            &admin,
+            &AdminAction::SetDonationContract(new_registry.clone()),
+        );
+        client.execute_admin_action(&admin, &prop_id);
+        assert!(client.get_proposal(&prop_id).unwrap().executed);
+    }
+
+    #[test]
+    fn test_bump_and_bump_subscription_ttl() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let admins = soroban_sdk::vec![&env, admin.clone()];
+        let (client, _) = deploy_pair(&env, admins, 1, 0);
+
+        // bump instance TTL succeeds
+        client.bump();
+
+        // Non-existent subscription bump fails
+        assert!(client.try_bump_subscription(&9999).is_err());
     }
 }
