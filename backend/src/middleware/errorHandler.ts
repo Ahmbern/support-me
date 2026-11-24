@@ -4,6 +4,7 @@ import { ZodError } from "zod";
 import { AppError } from "../errors/AppError";
 import { log } from "../lib/logger";
 import * as Sentry from "@sentry/node";
+import { getRequestPath } from "./requestLogger";
 
 interface BodyParserError {
   type: string;
@@ -90,10 +91,12 @@ export function errorHandler(
     }
   }
 
+  const path = getRequestPath(req);
+
   log("error", "unhandled error", {
     requestId: req.requestId,
     method: req.method,
-    path: req.path,
+    path,
     error: safeErrorMessage(err),
   });
 
@@ -102,7 +105,7 @@ export function errorHandler(
     tags: {
       requestId: req.requestId || "unknown",
       method: req.method,
-      path: req.path,
+      path,
     },
   });
 

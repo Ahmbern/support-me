@@ -99,7 +99,7 @@ describe("errorHandler middleware", () => {
   });
 
   it("falls back to a generic conflict message when Prisma P2002 has no meta.target", () => {
-    const { req, res, status, json, next } = mockReqRes();
+    const { req, res, json, next } = mockReqRes();
     const err = new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
       code: "P2002",
       clientVersion: "test",
@@ -189,5 +189,24 @@ describe("errorHandler middleware", () => {
     errorHandler(new BadRequestError("handled"), req, res, next);
 
     expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  it("extracts the full path from originalUrl (with query string stripped) for Sentry tags (#535)", () => {
+    const { req, res, next } = mockReqRes({
+      originalUrl: "/api/creators/bob?secret=token&tab=overview",
+      path: "/bob",
+    });
+    const err = new Error("unhandled boom");
+
+    errorHandler(err, req, res, next);
+
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      err,
+      expect.objectContaining({
+        tags: expect.objectContaining({
+          path: "/api/creators/bob",
+        }),
+      })
+    );
   });
 });
