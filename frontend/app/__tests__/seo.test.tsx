@@ -9,6 +9,8 @@ import { metadata as activityMeta } from '@/app/activity/layout';
 import { metadata as appMeta } from '@/app/app/layout';
 import { metadata as authMeta } from '@/app/auth/layout';
 import { metadata as rootMeta } from '@/app/layout';
+import { metadata as discoverMeta } from '@/app/discover/layout';
+import { metadata as leaderboardMeta } from '@/app/leaderboard/layout';
 import CreatorProfilePage, { generateMetadata } from '@/app/[username]/page';
 import { fetchCreatorSummary } from '@/app/[username]/creator-summary';
 
@@ -48,9 +50,12 @@ describe('SEO & Robots Directives', () => {
       index: true,
       follow: true,
     });
-    expect(rootMeta.alternates).toEqual({
-      canonical: '/',
-    });
+    expect(rootMeta.alternates).toBeUndefined();
+  });
+
+  it('sets self-referencing canonicals for public route layouts', () => {
+    expect(discoverMeta.alternates?.canonical).toBe('/discover');
+    expect(leaderboardMeta.alternates?.canonical).toBe('/leaderboard');
   });
 
   it('generates consistent robots.txt configuration', () => {
