@@ -363,6 +363,7 @@ impl CreatorRegistryContract {
             proposal_id: prop_id,
             proposer,
             eta,
+            action: proposal.action.clone(),
         }
         .publish(&env);
 
@@ -870,7 +871,7 @@ mod tests {
     };
     use soroban_sdk::testutils::{
         storage::{Instance as _, Persistent as _},
-        Address as _, Ledger,
+        Address as _, Events as _, Ledger,
     };
     use soroban_sdk::{vec, IntoVal, Val};
 
@@ -1395,8 +1396,8 @@ mod tests {
         let (client, admin, _) = setup(&env);
 
         let target = Address::generate(&env);
-        let prop_id = client
-            .propose_admin_action(&admin, &AdminAction::SetDonationContract(target));
+        let prop_id =
+            client.propose_admin_action(&admin, &AdminAction::SetDonationContract(target));
         client.cancel_admin_action(&admin, &prop_id);
 
         let prop = client.get_proposal(&prop_id).unwrap();
@@ -1419,8 +1420,8 @@ mod tests {
         let (client, admin, _) = setup(&env);
 
         let target = Address::generate(&env);
-        let prop_id = client
-            .propose_admin_action(&admin, &AdminAction::SetDonationContract(target));
+        let prop_id =
+            client.propose_admin_action(&admin, &AdminAction::SetDonationContract(target));
         let prop = client.get_proposal(&prop_id).unwrap();
         assert_eq!(prop.expires_at, ADMIN_PROPOSAL_TTL_SECONDS);
 
@@ -1743,9 +1744,12 @@ mod tests {
         );
         let client = CreatorRegistryContractClient::new(&env, &id);
 
-        let pid = client.propose_admin_action(&a1, &AdminAction::Pause);
-        client.approve_admin_action(&a1, &pid);
-        let res = client.try_approve_admin_action(&a1, &pid);
+        let pid = client.propose_admin_action(
+            &a1,
+            &AdminAction::SetDonationContract(Address::generate(&env)),
+        );
+        client.approve_admin_action(&a2, &pid);
+        let res = client.try_approve_admin_action(&a2, &pid);
         assert_eq!(
             res.unwrap_err().unwrap(),
             RegistryError::AlreadyApproved.into()
@@ -1766,7 +1770,10 @@ mod tests {
         );
         let client = CreatorRegistryContractClient::new(&env, &id);
 
-        let pid = client.propose_admin_action(&admin, &AdminAction::Pause);
+        let pid = client.propose_admin_action(
+            &admin,
+            &AdminAction::SetDonationContract(Address::generate(&env)),
+        );
         env.ledger().with_mut(|li| li.timestamp = 50);
         let res = client.try_execute_admin_action(&admin, &pid);
         assert_eq!(
@@ -1834,15 +1841,11 @@ mod tests {
 
     fn reg_events_by_topic(env: &Env, topic: &str) -> u32 {
         let mut n = 0u32;
-        for e in env.events().all().iter() {
-            let (_c, topics, _d) = e;
-            if topics.len() > 0 {
-                let first: soroban_sdk::Val = topics.get(0).unwrap();
-                if let Ok(sym) = soroban_sdk::Symbol::try_from_val(env, &first) {
-                    if sym == soroban_sdk::Symbol::new(env, topic) {
-                        n += 1;
-                    }
-                }
+        let expected_topic = soroban_sdk::xdr::ScVal::Symbol(topic.try_into().unwrap());
+        for event in env.events().all().events() {
+            let soroban_sdk::xdr::ContractEventBody::V0(body) = &event.body;
+            if body.topics.first() == Some(&expected_topic) {
+                n += 1;
             }
         }
         n
