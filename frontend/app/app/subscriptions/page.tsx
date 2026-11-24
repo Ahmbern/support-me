@@ -41,6 +41,8 @@ function SubscriptionsList() {
   const { user, token } = useAuth();
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [retryNonce, setRetryNonce] = useState(0);
   const [cancellingId, setCancellingId] = useState<number | null>(null);
   const [subscriptionToCancel, setSubscriptionToCancel] = useState<Subscription | null>(null);
   const [subscriptionToRemove, setSubscriptionToRemove] = useState<Subscription | null>(null);
@@ -51,6 +53,9 @@ function SubscriptionsList() {
       return;
     }
     if (!token) return;
+
+    setLoadError(false);
+    setLoading(true);
 
     fetchWithRetry(`${API_URL}/api/subscriptions?supporterAddress=${encodeURIComponent(user.walletAddress)}`, {
       headers: { Authorization: `Bearer ${token}` },
@@ -67,6 +72,7 @@ function SubscriptionsList() {
       })
       .then(setSubscriptions)
       .catch((err) => {
+        setLoadError(true);
         if (isNetworkError(err)) return;
         if (err?.isAuthError) {
           notify.error('Session expired, sign in again');
@@ -75,7 +81,7 @@ function SubscriptionsList() {
         notify.error('Could not load your subscriptions', err);
       })
       .finally(() => setLoading(false));
-  }, [user?.walletAddress, token]);
+  }, [user?.walletAddress, token, retryNonce]);
 
   const handleCancel = async (subscription: Subscription) => {
     if (!user?.walletAddress) return;
@@ -170,6 +176,13 @@ function SubscriptionsList() {
                 Go to Settings
               </Link>
             </div>
+          </div>
+        ) : loadError ? (
+          <div className="card-brutal p-8 text-center space-y-3" role="alert">
+            <p className="text-ink font-bold">Could not load your subscriptions.</p>
+            <button type="button" onClick={() => { setLoadError(false); setRetryNonce((value) => value + 1); }} className="btn-brutal btn-brutal-white text-sm py-2 px-4">
+              Retry
+            </button>
           </div>
         ) : subscriptions.length === 0 ? (
           <div className="card-brutal p-8 text-center">
