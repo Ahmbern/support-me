@@ -15,6 +15,8 @@
 //! This is an accepted design choice: the backend indexing `DonatedEvent`s
 //! is the canonical source of long-term history. Future contract upgrades
 //! should avoid relying on the complete on-chain history being present.
+//! Successful state-changing entry points extend the contract instance TTL;
+//! the donation-record TTL exception below applies only to old log entries.
 //!
 //! Multi-signature and timelock governance:
 //! High-risk administrative operations (setting executor, rotating admins,
@@ -339,6 +341,7 @@ impl DonationContract {
         env.storage().instance().set(&TIMELOCK_DELAY_KEY, &0u64);
         env.storage().instance().set(&PAUSED_KEY, &false);
         env.storage().instance().set(&REGISTRY_KEY, &registry);
+        extend_instance_ttl(&env);
     }
 
     /// One-time multi-sig setup: configures admin list, threshold, and timelock delay.
@@ -481,10 +484,12 @@ impl DonationContract {
             .persistent()
             .set(&PROPOSAL_COUNTER_KEY, &next_prop_id);
 
+        extend_instance_ttl(&env);
         ProposalCreatedEvent {
             proposal_id: prop_id,
             proposer,
             eta,
+            action: proposal.action.clone(),
         }
         .publish(&env);
 
@@ -534,6 +539,7 @@ impl DonationContract {
             .persistent()
             .set(&(PROPOSAL_KEY, proposal_id), &proposal);
 
+        extend_instance_ttl(&env);
         ProposalApprovedEvent {
             proposal_id,
             admin,
@@ -745,6 +751,7 @@ impl DonationContract {
             .persistent()
             .set(&(PROPOSAL_KEY, proposal_id), &proposal);
 
+        extend_instance_ttl(&env);
         ProposalExecutedEvent {
             proposal_id,
             executor,
@@ -781,7 +788,9 @@ impl DonationContract {
         }
         let registry = Self::registry_address(&env);
         let args: Vec<Val> = (creator, username).into_val(&env);
-        env.invoke_contract(&registry, &Symbol::new(&env, "register_creator"), args)
+        let profile = env.invoke_contract(&registry, &Symbol::new(&env, "register_creator"), args);
+        extend_instance_ttl(&env);
+        profile
     }
 
     /// Cross-contract call: reads a creator's profile from CreatorRegistry.
@@ -1044,6 +1053,7 @@ impl DonationContract {
             .persistent()
             .set(&DONATION_COUNTER, &next_counter);
 
+        extend_instance_ttl(&env);
         DonatedEvent {
             donor,
             creator,
@@ -1134,6 +1144,7 @@ impl DonationContract {
         }
         .publish(&env);
 
+        extend_instance_ttl(&env);
         id
     }
 
@@ -1324,6 +1335,7 @@ impl DonationContract {
         }
         .publish(&env);
 
+        extend_instance_ttl(&env);
         Ok(donation)
     }
 
@@ -1523,7 +1535,7 @@ mod tests {
     use super::*;
     use creator_registry::{CreatorRegistryContract, CreatorRegistryContractClient};
     use soroban_sdk::events::Event as _;
-    use soroban_sdk::testutils::{Address as _, Events as _, Ledger};
+    use soroban_sdk::testutils::{storage::Instance as _, Address as _, Events as _, Ledger};
     use soroban_sdk::token::StellarAssetClient;
 
     fn create_token_contract(env: &Env, admin: &Address) -> Address {
@@ -1569,6 +1581,182 @@ mod tests {
         let (donation_client, registry_client) =
             deploy_pair(env, Vec::from_array(env, [admin.clone()]), 1, 0);
         (admin, donation_client, registry_client)
+    }
+
+    fn instance_ttl(env: &Env, contract: &Address) -> u32 {
+        env.as_contract(contract, || env.storage().instance().get_ttl())
+    }
+
+    fn lower_instance_ttl(env: &Env) {
+        env.ledger().with_mut(|li| {
+            li.sequence_number +=
+                common::INSTANCE_BUMP_AMOUNT - common::INSTANCE_LIFETIME_THRESHOLD + 1
+        });
+    }
+
+    fn assert_instance_ttl_is_low(env: &Env, contract: &Address) {
+        assert!(instance_ttl(env, contract) < common::INSTANCE_LIFETIME_THRESHOLD);
+    }
+
+    fn assert_instance_ttl_was_extended(env: &Env, contract: &Address) {
+        assert_eq!(instance_ttl(env, contract), common::INSTANCE_BUMP_AMOUNT);
+    }
+
+    #[test]
+    fn test_initialize_extends_instance_ttl() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let contract_id = env.register(DonationContract, ());
+        let donation_client = DonationContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let registry = Address::generate(&env);
+
+        assert_instance_ttl_is_low(&env, &contract_id);
+
+        donation_client.initialize(&admin, &registry);
+
+        assert_instance_ttl_was_extended(&env, &contract_id);
+    }
+
+    #[test]
+    fn test_register_creator_extends_instance_ttl() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (_admin, donation_client, _registry_client) = setup(&env);
+        let creator = Address::generate(&env);
+
+        lower_instance_ttl(&env);
+        assert_instance_ttl_is_low(&env, &donation_client.address);
+
+        donation_client.register_creator(&creator, &String::from_bytes(&env, b"ttl_creator"));
+
+        assert_instance_ttl_was_extended(&env, &donation_client.address);
+    }
+
+    #[test]
+    fn test_donate_extends_instance_ttl() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (admin, donation_client, _registry_client) = setup(&env);
+        let donor = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let token_address = create_token_contract(&env, &admin);
+        donation_client.add_allowed_token(&token_address);
+        StellarAssetClient::new(&env, &token_address).mint(&donor, &100);
+
+        lower_instance_ttl(&env);
+        assert_instance_ttl_is_low(&env, &donation_client.address);
+
+        donation_client.donate(
+            &donor,
+            &creator,
+            &token_address,
+            &100,
+            &String::from_bytes(&env, b"ttl"),
+        );
+
+        assert_instance_ttl_was_extended(&env, &donation_client.address);
+    }
+
+    #[test]
+    fn test_subscribe_extends_instance_ttl() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (admin, donation_client, _registry_client) = setup(&env);
+        let supporter = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let token_address = create_token_contract(&env, &admin);
+        donation_client.add_allowed_token(&token_address);
+
+        lower_instance_ttl(&env);
+        assert_instance_ttl_is_low(&env, &donation_client.address);
+
+        donation_client.subscribe(&supporter, &creator, &token_address, &100, &1_000);
+
+        assert_instance_ttl_was_extended(&env, &donation_client.address);
+    }
+
+    #[test]
+    fn test_charge_subscription_extends_instance_ttl() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (admin, donation_client, _registry_client) = setup(&env);
+        let supporter = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let executor = Address::generate(&env);
+        let token_address = create_token_contract(&env, &admin);
+        donation_client.add_allowed_token(&token_address);
+        StellarAssetClient::new(&env, &token_address).mint(&supporter, &100);
+        donation_client.set_executor(&executor);
+        let id = donation_client.subscribe(&supporter, &creator, &token_address, &100, &1_000);
+        token::Client::new(&env, &token_address).approve(
+            &supporter,
+            &donation_client.address,
+            &100,
+            &100_000,
+        );
+        env.ledger().with_mut(|li| li.timestamp = 1_000);
+
+        lower_instance_ttl(&env);
+        assert_instance_ttl_is_low(&env, &donation_client.address);
+
+        donation_client.charge_subscription(&executor, &id);
+
+        assert_instance_ttl_was_extended(&env, &donation_client.address);
+    }
+
+    #[test]
+    fn test_propose_admin_action_extends_instance_ttl() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (admin, donation_client, _registry_client) = setup(&env);
+
+        lower_instance_ttl(&env);
+        assert_instance_ttl_is_low(&env, &donation_client.address);
+
+        donation_client.propose_admin_action(&admin, &AdminAction::Pause);
+
+        assert_instance_ttl_was_extended(&env, &donation_client.address);
+    }
+
+    #[test]
+    fn test_approve_admin_action_extends_instance_ttl() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let admin1 = Address::generate(&env);
+        let admin2 = Address::generate(&env);
+        let admins = Vec::from_array(&env, [admin1.clone(), admin2.clone()]);
+        let (donation_client, _registry_client) = deploy_pair(&env, admins, 2, 0);
+        let proposal_id = donation_client.propose_admin_action(&admin1, &AdminAction::Pause);
+
+        env.as_contract(&donation_client.address, || {
+            common::extend_persistent_ttl(&env, &(PROPOSAL_KEY, proposal_id));
+        });
+        lower_instance_ttl(&env);
+        assert_instance_ttl_is_low(&env, &donation_client.address);
+
+        donation_client.approve_admin_action(&admin2, &proposal_id);
+
+        assert_instance_ttl_was_extended(&env, &donation_client.address);
+    }
+
+    #[test]
+    fn test_execute_admin_action_extends_instance_ttl() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (admin, donation_client, _registry_client) = setup(&env);
+        let proposal_id = donation_client.propose_admin_action(&admin, &AdminAction::Pause);
+
+        env.as_contract(&donation_client.address, || {
+            common::extend_persistent_ttl(&env, &(PROPOSAL_KEY, proposal_id));
+            common::extend_persistent_ttl(&env, &(APPROVAL_KEY, proposal_id, admin.clone()));
+        });
+        lower_instance_ttl(&env);
+        assert_instance_ttl_is_low(&env, &donation_client.address);
+
+        donation_client.execute_admin_action(&admin, &proposal_id);
+
+        assert_instance_ttl_was_extended(&env, &donation_client.address);
     }
 
     #[test]
@@ -3264,7 +3452,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cancelled_proposal_cannot_execute() {
+    fn test_cancelled_proposal_rejects_execution() {
         let env = Env::default();
         env.mock_all_auths();
         let admin1 = Address::generate(&env);
@@ -3361,7 +3549,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cancelled_proposal_cannot_execute() {
+    fn test_cancelled_proposal_returns_specific_error() {
         let env = Env::default();
         env.mock_all_auths();
         let admin = Address::generate(&env);
@@ -3369,7 +3557,8 @@ mod tests {
         let (client, _) = deploy_pair(&env, admins, 1, 0);
 
         let target = Address::generate(&env);
-        let prop_id = client.propose_admin_action(&admin, &AdminAction::SetDonationContract(target));
+        let prop_id =
+            client.propose_admin_action(&admin, &AdminAction::SetDonationContract(target));
 
         client.cancel_admin_action(&admin, &prop_id);
 
@@ -3380,7 +3569,7 @@ mod tests {
         env.ledger().with_mut(|li| li.timestamp = 10);
         assert_eq!(
             client.try_execute_admin_action(&admin, &prop_id),
-            Err(Ok(DonationError::ProposalAlreadyExecuted.into()))
+            Err(Ok(DonationError::ProposalCancelled.into()))
         );
         let prop_after = client.get_proposal(&prop_id).unwrap();
         assert!(prop_after.cancelled);
@@ -3399,7 +3588,8 @@ mod tests {
         let (client, _) = deploy_pair(&env, admins, 2, 0);
 
         let target = Address::generate(&env);
-        let prop_id = client.propose_admin_action(&admin1, &AdminAction::SetDonationContract(target));
+        let prop_id =
+            client.propose_admin_action(&admin1, &AdminAction::SetDonationContract(target));
 
         // A single non-proposer request (1 < threshold 2) does not cancel.
         client.cancel_admin_action(&admin2, &prop_id);
