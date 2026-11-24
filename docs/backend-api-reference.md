@@ -1095,7 +1095,6 @@ data: {
   "donor": "G...",
   "creator": "G...",
   "amount": 10.5,
-  "fee_amount": 0.0,
   "memo": "Great work!",
   "timestamp": 1704067200000,
   "txHash": "abc123...",
