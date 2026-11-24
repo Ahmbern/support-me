@@ -258,4 +258,22 @@ describe('LeaderboardPage', () => {
       expect(screen.getAllByText('Alice In Chains').length).toBeGreaterThan(0);
     });
   });
+
+  it('refetches with the selected timeframe', async () => {
+    render(<LeaderboardPage />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('Alice In Chains').length).toBeGreaterThan(0);
+    });
+
+    const thisWeek = screen.getByRole('button', { name: 'This Week' });
+    fireEvent.click(thisWeek);
+
+    expect(thisWeek).toHaveAttribute('aria-pressed', 'true');
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining('period=week')
+      );
+    });
+  });
 });

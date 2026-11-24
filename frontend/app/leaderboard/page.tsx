@@ -89,7 +89,7 @@ export default function LeaderboardPage() {
     setError(null);
     try {
       const res = await fetch(
-        `${API_URL}/api/creators/leaderboard?type=${type}&currency=${currency}&page=1&limit=50`
+        `${API_URL}/api/creators/leaderboard?type=${type}&currency=${currency}&period=${timeframe}&page=1&limit=50`
       );
       if (!res.ok) {
         throw new Error('Failed to load leaderboard data.');
@@ -106,7 +106,7 @@ export default function LeaderboardPage() {
 
   useEffect(() => {
     void fetchLeaderboard();
-  }, [type, currency]);
+  }, [type, currency, timeframe]);
 
   const topThree = data.slice(0, 3);
   const restEntries = data.slice(3);
