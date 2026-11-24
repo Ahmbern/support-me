@@ -36,12 +36,14 @@ describe('CreatorProfilePage JSON-LD', () => {
 
   it('emits a ProfilePage/Person JSON-LD block with name, image, and description', async () => {
     mockFetchCreatorSummary.mockResolvedValue({
-      username: 'awesome_dev',
-      displayName: 'Awesome Dev',
-      bio: 'Building cool things on Stellar.',
-      avatarUrl: 'https://cdn.example.com/avatar.png',
-      donationGoal: null,
-      updatedAt: '2026-05-01T12:00:00.000Z',
+      status: 'found',
+      creator: {
+        username: 'awesome_dev',
+        displayName: 'Awesome Dev',
+        bio: 'Building cool things on Stellar.',
+        avatarUrl: 'https://cdn.example.com/avatar.png',
+        donationGoal: null,
+      },
     });
 
     const page = await CreatorProfilePage({ params: Promise.resolve({ username: 'awesome_dev' }) });
@@ -64,12 +66,14 @@ describe('CreatorProfilePage JSON-LD', () => {
 
   it('falls back to username and a default description when displayName/bio are missing', async () => {
     mockFetchCreatorSummary.mockResolvedValue({
-      username: 'plain_creator',
-      displayName: null,
-      bio: null,
-      avatarUrl: null,
-      donationGoal: null,
-      updatedAt: '2026-05-01T12:00:00.000Z',
+      status: 'found',
+      creator: {
+        username: 'plain_creator',
+        displayName: null,
+        bio: null,
+        avatarUrl: null,
+        donationGoal: null,
+      },
     });
 
     const page = await CreatorProfilePage({ params: Promise.resolve({ username: 'plain_creator' }) });
@@ -81,19 +85,20 @@ describe('CreatorProfilePage JSON-LD', () => {
     expect(jsonLd.mainEntity.image).toBeUndefined();
   });
 
-  it('omits the JSON-LD block entirely when the creator cannot be found', async () => {
-    mockFetchCreatorSummary.mockResolvedValue(null);
+  it('renders the client fallback without JSON-LD when the lookup is unavailable', async () => {
+    mockFetchCreatorSummary.mockResolvedValue({ status: 'unavailable', creator: null });
 
-    const page = await CreatorProfilePage({ params: Promise.resolve({ username: 'missing' }) });
+    const page = await CreatorProfilePage({ params: Promise.resolve({ username: 'temporarily_unavailable' }) });
     const { container } = render(page);
 
     expect(container.querySelector('script[type="application/ld+json"]')).toBeNull();
+    expect(container.querySelector('[data-testid="creator-profile-client"]')).toBeInTheDocument();
   });
 });
 
 describe('CreatorProfilePage locale', () => {
   beforeEach(() => {
-    mockFetchCreatorSummary.mockResolvedValue(null);
+    mockFetchCreatorSummary.mockResolvedValue({ status: 'unavailable', creator: null });
     localeCookie = undefined;
   });
 
