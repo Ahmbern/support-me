@@ -52,7 +52,7 @@ const parseGoalTarget = (value: string): number | null => {
 
 export default function SettingsPage() {
   const { user, token } = useAuth();
-  const { creator, loading: creatorLoading, invalidate } = useCreator();
+  const { creator, loading: creatorLoading, error: creatorError, invalidate } = useCreator();
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -397,6 +397,27 @@ export default function SettingsPage() {
               <Skeleton className="h-10 w-full" />
               <Skeleton className="h-10 w-full" />
               <Skeleton className="h-24 w-full" />
+            </div>
+          </div>
+        </div>
+      </ProtectedRoute>
+    );
+  }
+
+  if (!creator && creatorError) {
+    return (
+      <ProtectedRoute>
+        <div className="min-h-screen bg-background">
+          <AppNav />
+          <div className="max-w-2xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
+            <div className="card-brutal p-8 text-center mb-6">
+              <p className="text-muted mb-4 font-medium">{creatorError}</p>
+              <button type="button" onClick={invalidate} className="btn-brutal btn-brutal-primary">
+                Retry
+              </button>
+            </div>
+            <div className="card-brutal p-8">
+              <AccountDataSection />
             </div>
           </div>
         </div>
