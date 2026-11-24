@@ -227,6 +227,7 @@ The contracts use typed, discriminant-backed errors instead of untyped panics:
 | 25 | `ExecutorNotSet` | Contract executor is not set |
 | 26 | `Overflow` | Numeric overflow or underflow |
 | 27 | `InvalidGoal` | Invalid creator goal amount |
+| 28 | `SelfDonation` | Donor and creator are the same address |
 
 ### `RegistryError` (`contracts/creator-registry`)
 | Code | Error Variant | Description |
@@ -253,8 +254,9 @@ The contracts use typed, discriminant-backed errors instead of untyped panics:
 
 1. **Authentication**: All state-changing operations require auth
 2. **Validation**: Amounts must be positive
-3. **Creator Flexibility**: Creators don't need to pre-register to receive donations
-4. **Immutability**: All donation records are immutable once recorded
+3. **No self-donations**: `donate` and `subscribe` reject calls where the donor/supporter address equals the creator address (`DonationError::SelfDonation`). This prevents a creator from inflating their own registry stats and leaderboard standing at the cost of only the network fee.
+4. **Creator Flexibility**: Creators don't need to pre-register to receive donations
+5. **Immutability**: All donation records are immutable once recorded
 
 ## Deployment and initialization
 

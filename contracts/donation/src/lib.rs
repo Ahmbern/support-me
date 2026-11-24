@@ -187,6 +187,7 @@ pub enum DonationError {
     MultiSigRequired = 25,
     ExecutorNotSet = 26,
     Overflow = 27,
+    SelfDonation = 28,
 }
 
 #[contractevent(topics = ["sub_failed"])]
@@ -687,6 +688,9 @@ impl DonationContract {
             soroban_sdk::panic_with_error!(&env, DonationError::Paused);
         }
         donor.require_auth();
+        if donor == creator {
+            soroban_sdk::panic_with_error!(&env, DonationError::SelfDonation);
+        }
         if amount <= 0 {
             soroban_sdk::panic_with_error!(&env, DonationError::InvalidAmount);
         }
@@ -775,6 +779,9 @@ impl DonationContract {
             soroban_sdk::panic_with_error!(&env, DonationError::Paused);
         }
         supporter.require_auth();
+        if supporter == creator {
+            soroban_sdk::panic_with_error!(&env, DonationError::SelfDonation);
+        }
         if amount <= 0 {
             soroban_sdk::panic_with_error!(&env, DonationError::InvalidAmount);
         }
@@ -2299,5 +2306,49 @@ mod tests {
         assert_eq!(sub_don.amount, 500);
         assert_eq!(sub_don.creator, creator);
         assert_eq!(sub_don.donor, donor);
+    }
+
+    #[test]
+    fn test_donate_rejects_self_donation() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (admin, donation_client, _registry_client) = setup(&env);
+
+        let creator = Address::generate(&env);
+        let token_address = create_token_contract(&env, &admin);
+        donation_client.add_allowed_token(&token_address);
+        StellarAssetClient::new(&env, &token_address).mint(&creator, &1_000);
+
+        let res = donation_client.try_donate(
+            &creator,
+            &creator,
+            &token_address,
+            &100,
+            &String::from_bytes(&env, b"to myself"),
+        );
+        assert_eq!(
+            res.unwrap_err().unwrap(),
+            DonationError::SelfDonation.into()
+        );
+    }
+
+    #[test]
+    fn test_subscribe_rejects_self_subscription() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let (admin, donation_client, _registry_client) = setup(&env);
+
+        let creator = Address::generate(&env);
+        let token_address = create_token_contract(&env, &admin);
+        donation_client.add_allowed_token(&token_address);
+
+        env.ledger().with_mut(|li| li.timestamp = 1_000);
+
+        let res =
+            donation_client.try_subscribe(&creator, &creator, &token_address, &100, &2_592_000);
+        assert_eq!(
+            res.unwrap_err().unwrap(),
+            DonationError::SelfDonation.into()
+        );
     }
 }
