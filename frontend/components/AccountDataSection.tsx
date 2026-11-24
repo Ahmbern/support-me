@@ -78,7 +78,9 @@ export function AccountDataSection() {
       });
       setConfirming(false);
       setConfirmText('');
-      logout();
+      await logout().catch(() => {
+        notify.error('Could not sign out', 'Use Sign Out in the account menu to try again.');
+      });
     } catch (err) {
       if (isNetworkError(err)) return;
       notify.error('Could not delete your account', err);

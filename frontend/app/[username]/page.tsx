@@ -1,7 +1,8 @@
 import type { Metadata } from 'next';
 import { cookies } from 'next/headers';
+import { notFound } from 'next/navigation';
 import CreatorProfileClient from './CreatorProfileClient';
-import { fetchCreatorSummary } from './creator-summary';
+import { fetchCreatorSummary, type CreatorSummary } from './creator-summary';
 import { DEFAULT_LOCALE, LOCALE_COOKIE_NAME, isSupportedLocale, type Locale } from '@/lib/locale';
 
 type ParamsPromise = Promise<{ username: string }>;
@@ -13,11 +14,11 @@ const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://support-mee.vercel
 
 export async function generateMetadata({ params }: { params: ParamsPromise }): Promise<Metadata> {
   const { username } = await params;
-  const creator = await fetchCreatorSummary(username);
+  const { creator, status } = await fetchCreatorSummary(username);
 
   if (!creator) {
     return {
-      title: 'Creator not found — SupportMe',
+      title: status === 'not-found' ? 'Creator not found — SupportMe' : 'Creator profile — SupportMe',
       robots: {
         index: false,
         follow: false,
@@ -58,7 +59,9 @@ export async function generateMetadata({ params }: { params: ParamsPromise }): P
 
 export default async function CreatorProfilePage({ params }: { params: ParamsPromise }) {
   const { username } = await params;
-  const creator = await fetchCreatorSummary(username);
+  const { creator, status } = await fetchCreatorSummary(username);
+  if (status === 'not-found') notFound();
+
   const locale = await readLocaleCookie();
 
   return (
@@ -85,7 +88,7 @@ async function readLocaleCookie(): Promise<Locale> {
   return isSupportedLocale(value) ? value : DEFAULT_LOCALE;
 }
 
-function buildCreatorJsonLd(creator: NonNullable<Awaited<ReturnType<typeof fetchCreatorSummary>>>) {
+function buildCreatorJsonLd(creator: CreatorSummary) {
   const name = creator.displayName || creator.username;
   const description = creator.bio?.trim() || `Support ${name} with a tip on SupportMe.`;
   const url = `${SITE_URL}/${creator.username}`;

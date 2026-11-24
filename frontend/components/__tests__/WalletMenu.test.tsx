@@ -1,12 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, within, act } from '@testing-library/react';
-import { WalletMenu, accountLabel } from '@/components/WalletMenu';
+import { render, screen, fireEvent, within, act, waitFor } from '@testing-library/react';
+import { WalletMenu } from '@/components/WalletMenu';
+import { notify } from '@/lib/notify';
 
 const pathname = vi.hoisted(() => ({ current: '/app' }));
 const logout = vi.hoisted(() => vi.fn());
 const mockUser = vi.hoisted(() => ({
   current: { walletAddress: 'GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUV' as string | null, email: null as string | null },
 }));
+
+vi.mock('@/lib/notify', () => ({ notify: { error: vi.fn() } }));
 
 vi.mock('next/navigation', () => ({
   usePathname: () => pathname.current,
@@ -28,7 +31,8 @@ function openMenu() {
 
 beforeEach(() => {
   pathname.current = '/app';
-  logout.mockClear();
+  logout.mockReset();
+  vi.mocked(notify.error).mockClear();
   mockUser.current = { walletAddress: 'GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRSTUV', email: null };
 });
 
@@ -85,6 +89,20 @@ describe('WalletMenu secondary destinations (#151)', () => {
     fireEvent.click(menu.getByRole('menuitem', { name: /activity/i }));
     expect(screen.queryByRole('menu')).not.toBeInTheDocument();
   });
+});
+
+it('offers a retry when signing out fails', async () => {
+  logout.mockRejectedValue(new TypeError('Failed to fetch'));
+  const menu = openMenu();
+
+  fireEvent.click(menu.getByRole('menuitem', { name: 'Sign Out' }));
+
+  await waitFor(() => expect(notify.error).toHaveBeenCalledWith(
+    'Could not sign out',
+    expect.stringContaining('could not end your session'),
+    { action: { label: 'Retry', onClick: expect.any(Function) } },
+  ));
+  expect(menu.getByRole('menuitem', { name: 'Sign Out' })).toHaveAttribute('aria-disabled', 'false');
 });
 
 describe('WalletMenu active destination', () => {
