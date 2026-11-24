@@ -20,6 +20,7 @@ import { QrCodeCard } from '@/components/QrCodeCard';
 import { DashboardStats, type CreatorStats } from '@/components/DashboardStats';
 import { usePrices } from '@/lib/usePrices';
 import { formatUsd } from '@/lib/prices';
+import { formatAmount } from '@/lib/format';
 import { API_URL } from '@/lib/api';
 import { explorerTxUrl } from '@/lib/stellarNetwork';
 
@@ -447,7 +448,7 @@ export default function DashboardPage() {
                         {currency} Volume
                       </p>
                       <p className="text-2xl sm:text-3xl font-extrabold text-ink mt-2 tabular-nums">
-                        {Math.round(total).toLocaleString()} <span className="text-xl">{currency}</span>
+                        {formatAmount(total)} <span className="text-xl">{currency}</span>
                       </p>
                       {formatUsd(total, currency, prices) && (
                         <p className="text-sm font-bold text-ink/70 mt-1">{formatUsd(total, currency, prices)}</p>
@@ -463,7 +464,7 @@ export default function DashboardPage() {
                     <div className="mt-2 space-y-1">
                       {Object.entries(withdrawnByCurrency).map(([currency, amount]) => (
                         <p key={currency} className="text-2xl sm:text-3xl font-extrabold text-ink tabular-nums">
-                          {Math.round(amount)} <span className="text-xl">{currency}</span>
+                          {formatAmount(amount)} <span className="text-xl">{currency}</span>
                         </p>
                       ))}
                     </div>
