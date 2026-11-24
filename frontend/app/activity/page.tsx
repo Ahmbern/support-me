@@ -82,7 +82,7 @@ export default function ActivityPage() {
 
         {error && !data ? (
           <div className="card-brutal bg-brand-pink p-6 mb-6 text-ink">
-            <p className="font-bold mb-3">{error}</p>
+            <p role="alert" className="font-bold mb-3">{error}</p>
             <button
               type="button"
               onClick={fetchOverview}
@@ -92,7 +92,16 @@ export default function ActivityPage() {
             </button>
           </div>
         ) : error ? (
-          <div className="card-brutal bg-brand-pink p-4 mb-6 text-ink font-bold">{error}</div>
+          <div className="card-brutal bg-brand-pink p-4 mb-6 text-ink font-bold flex items-center justify-between gap-4">
+            <p role="alert">{error}</p>
+            <button
+              type="button"
+              onClick={fetchOverview}
+              className="btn-brutal btn-brutal-white text-sm font-bold px-4 py-2 shrink-0"
+            >
+              Retry
+            </button>
+          </div>
         ) : null}
 
         {data === null ? null : isEmpty ? (

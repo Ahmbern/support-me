@@ -1389,6 +1389,53 @@ mod tests {
     }
 
     #[test]
+    fn test_approve_rejects_cancelled_proposal() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, _) = setup(&env);
+
+        let target = Address::generate(&env);
+        let prop_id = client
+            .propose_admin_action(&admin, &AdminAction::SetDonationContract(target));
+        client.cancel_admin_action(&admin, &prop_id);
+
+        let prop = client.get_proposal(&prop_id).unwrap();
+        assert!(prop.cancelled);
+        assert!(!prop.executed);
+
+        // A cancelled proposal cannot be approved: the revert happens before
+        // the approval is recorded, so no `prop_approved` event is emitted.
+        assert_eq!(
+            client.try_approve_admin_action(&admin, &prop_id),
+            Err(Ok(RegistryError::ProposalCancelled.into()))
+        );
+        assert!(!client.get_proposal(&prop_id).unwrap().executed);
+    }
+
+    #[test]
+    fn test_approve_rejects_expired_proposal() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, admin, _) = setup(&env);
+
+        let target = Address::generate(&env);
+        let prop_id = client
+            .propose_admin_action(&admin, &AdminAction::SetDonationContract(target));
+        let prop = client.get_proposal(&prop_id).unwrap();
+        assert_eq!(prop.expires_at, ADMIN_PROPOSAL_TTL_SECONDS);
+
+        // Well past the proposal's 7-day lifetime.
+        env.ledger()
+            .with_mut(|li| li.timestamp = ADMIN_PROPOSAL_TTL_SECONDS + 1);
+
+        assert_eq!(
+            client.try_approve_admin_action(&admin, &prop_id),
+            Err(Ok(RegistryError::ProposalExpired.into()))
+        );
+        assert!(!client.get_proposal(&prop_id).unwrap().executed);
+    }
+
+    #[test]
     fn test_cancel_requires_threshold_of_non_proposer_admins() {
         let env = Env::default();
         env.mock_all_auths();
