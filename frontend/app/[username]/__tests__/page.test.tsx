@@ -61,6 +61,7 @@ describe('CreatorProfilePage JSON-LD', () => {
       },
     });
     expect(jsonLd.mainEntity.url).toContain('/awesome_dev');
+    expect(jsonLd.dateModified).toBe('2026-05-01T12:00:00.000Z');
   });
 
   it('falls back to username and a default description when displayName/bio are missing', async () => {
