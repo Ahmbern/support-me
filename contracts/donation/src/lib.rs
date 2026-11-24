@@ -120,6 +120,7 @@ pub struct ProposalCreatedEvent {
     #[topic]
     pub proposer: Address,
     pub eta: u64,
+    pub action: AdminAction,
 }
 
 /// Emitted when an admin proposal receives an approval.
@@ -149,6 +150,41 @@ pub struct ProposalCancelledEvent {
     pub proposal_id: u64,
     #[topic]
     pub cancelled_by: Address,
+}
+
+/// Emitted when an admin is added to the multisig set.
+#[contractevent(topics = ["admin_added"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminAddedEvent {
+    #[topic]
+    pub admin: Address,
+    pub total_admins: u32,
+}
+
+/// Emitted when an admin is removed from the multisig set.
+#[contractevent(topics = ["admin_removed"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminRemovedEvent {
+    #[topic]
+    pub admin: Address,
+    pub total_admins: u32,
+}
+
+/// Emitted when the multisig approval threshold changes.
+#[contractevent(topics = ["threshold_chg"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ThresholdChangedEvent {
+    pub old_threshold: u32,
+    pub new_threshold: u32,
+}
+
+/// Emitted when the registry / donation-contract address is repointed.
+#[contractevent(topics = ["registry_chg"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegistryChangedEvent {
+    pub old_registry: Option<Address>,
+    #[topic]
+    pub new_registry: Address,
 }
 
 #[contractevent(topics = ["goal_upd"])]
@@ -600,13 +636,24 @@ impl DonationContract {
                 .publish(&env);
             }
             AdminAction::SetDonationContract(target) => {
+                let old: Option<Address> = env.storage().instance().get(&REGISTRY_KEY);
                 env.storage().instance().set(&REGISTRY_KEY, &target);
+                RegistryChangedEvent {
+                    old_registry: old,
+                    new_registry: target,
+                }
+                .publish(&env);
             }
             AdminAction::AddAdmin(new_admin) => {
                 let mut admins: Vec<Address> = env.storage().instance().get(&ADMINS_KEY).unwrap();
                 if !Self::contains_address(&admins, &new_admin) {
-                    admins.push_back(new_admin);
+                    admins.push_back(new_admin.clone());
                     env.storage().instance().set(&ADMINS_KEY, &admins);
+                    AdminAddedEvent {
+                        admin: new_admin,
+                        total_admins: admins.len(),
+                    }
+                    .publish(&env);
                 }
             }
             AdminAction::RemoveAdmin(old_admin) => {
@@ -626,6 +673,11 @@ impl DonationContract {
                     soroban_sdk::panic_with_error!(&env, DonationError::ThresholdExceedsAdmins);
                 }
                 env.storage().instance().set(&ADMINS_KEY, &new_admins);
+                AdminRemovedEvent {
+                    admin: old_admin.clone(),
+                    total_admins: new_admins.len(),
+                }
+                .publish(&env);
 
                 // #284: a removed primary admin must lose every privilege
                 // the legacy single-admin shortcuts (`set_executor`, token
@@ -647,7 +699,13 @@ impl DonationContract {
                 if new_threshold == 0 || new_threshold > admins.len() {
                     soroban_sdk::panic_with_error!(&env, DonationError::InvalidThreshold);
                 }
+                let old: u32 = env.storage().instance().get(&THRESHOLD_KEY).unwrap_or(0);
                 env.storage().instance().set(&THRESHOLD_KEY, &new_threshold);
+                ThresholdChangedEvent {
+                    old_threshold: old,
+                    new_threshold,
+                }
+                .publish(&env);
             }
             AdminAction::Pause => {
                 env.storage().instance().set(&PAUSED_KEY, &true);
