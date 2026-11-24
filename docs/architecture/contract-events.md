@@ -82,7 +82,7 @@ Emitted by `DonationContract::subscribe` when a supporter sets up a recurring do
 ---
 
 ### 2.3. `SubscriptionCancelledEvent`
-Emitted by `DonationContract::cancel_subscription` when a supporter cancels their recurring donation and zeroes out allowance.
+Emitted by `DonationContract::cancel_subscription` when a supporter cancels their recurring donation.
 
 - **Topic Schema**: `["sub_cancelled", supporter: Address, creator: Address]`
 - **Value Schema**:
@@ -95,6 +95,22 @@ Emitted by `DonationContract::cancel_subscription` when a supporter cancels thei
   ```
 - **Indexing & Filtering**:
   Indexed by both `supporter` and `creator`. Enables the backend to immediately reconcile database state (`active = false`) upon event ingestion without polling.
+
+---
+
+### `SubscriptionAllowanceEvent`
+
+Cancellation subtracts the cancelled subscription's amount from the shared SAC
+allowance, clamped at zero. When the remainder is positive, the contract
+re-approves it through the cancellation ledger plus the cancelled subscription's
+TTL bump. This can shorten or lengthen the previous expiry.
+
+- **Topic Schema**: `["sub_allowance_updated", supporter: Address, token: Address]`
+- **Value Fields**: `subscription_id: u64`, `live_until_ledger: u32` (inclusive).
+- **Client handling**: If the replacement expiry falls before the supporter's
+  intended approval window, prompt them to re-approve the allowance through
+  their desired ledger. A zero remainder is revoked and emits no
+  `sub_allowance_updated` event.
 
 ---
 

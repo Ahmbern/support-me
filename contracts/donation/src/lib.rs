@@ -111,6 +111,18 @@ pub struct SubscriptionCancelledEvent {
     pub subscription_id: u64,
 }
 
+/// Emitted when cancellation replaces a positive shared SAC allowance.
+#[contractevent(topics = ["sub_allowance_updated"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SubscriptionAllowanceEvent {
+    #[topic]
+    pub supporter: Address,
+    #[topic]
+    pub token: Address,
+    pub subscription_id: u64,
+    pub live_until_ledger: u32,
+}
+
 /// Emitted when an admin proposal is created.
 #[contractevent(topics = ["prop_created"])]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1315,23 +1327,14 @@ impl DonationContract {
         Ok(donation)
     }
 
-    /// Cancels a subscription and reduces the supporter's SAC allowance to
-    /// this contract by exactly this subscription's committed amount.
+    /// Cancels a subscription and subtracts its committed amount from the
+    /// supporter's shared SAC allowance for this token, clamping at zero.
     ///
-    /// # Allowance semantics
-    ///
-    /// SAC allowances are keyed by `(owner, spender)`, not per subscription,
-    /// so a supporter with two active subscriptions in the same token shares
-    /// one allowance between them. Zeroing that allowance on cancellation
-    /// (the old behavior) would silently break every *other* active
-    /// subscription in that token until the supporter noticed and
-    /// re-approved. Instead, this contract tracks each supporter's total
-    /// committed amount per token (`COMMITTED_KEY`, updated by `subscribe`
-    /// and here) and only decrements the live allowance by this
-    /// subscription's own `amount`, clamped at zero so a stale/lower
-    /// allowance (e.g. partially drawn down since) never underflows. The
-    /// remaining allowance is left untouched and continues to cover the
-    /// supporter's other active subscriptions in the same token.
+    /// A positive remainder is approved through the current ledger plus the
+    /// cancelled subscription's TTL bump. The SAC exposes only the allowance
+    /// amount, so this can shorten or lengthen the previous expiry. The
+    /// `sub_allowance_updated` event reports the replacement expiry so clients
+    /// can warn supporters and offer to re-approve through their desired ledger.
     pub fn cancel_subscription(env: Env, supporter: Address, subscription_id: u64) {
         supporter.require_auth();
 
@@ -1366,18 +1369,6 @@ impl DonationContract {
         let token_client = token::Client::new(&env, &subscription.token);
         let current_allowance = token_client.allowance(&supporter, &env.current_contract_address());
         let reduced_allowance = (current_allowance - subscription.amount).max(0);
-        // The SAC `TokenInterface` only exposes the allowance *amount*, not
-        // its current `live_until_ledger`, so the original expiration cannot
-        // be read back and preserved exactly on a partial reduction. When
-        // fully zeroing (no amount left to protect), the expiration argument
-        // is moot and 0 is passed, matching the old zeroing behavior. When a
-        // positive amount remains — i.e. other active subscriptions on this
-        // token still need it — this extends the allowance far enough to
-        // outlive this subscription's own remaining committed siblings,
-        // using the same per-subscription TTL budget `subscribe` already
-        // uses for the subscription entry itself (comfortably longer than
-        // one more charge interval). This can lengthen an allowance's
-        // remaining lifetime but never shortens one that is still needed.
         let expiration_ledger = if reduced_allowance > 0 {
             let bump_ledgers = common::subscription_bump_amount(subscription.interval_secs);
             env.ledger().sequence().saturating_add(bump_ledgers)
@@ -1390,6 +1381,16 @@ impl DonationContract {
             &reduced_allowance,
             &expiration_ledger,
         );
+
+        if reduced_allowance > 0 {
+            SubscriptionAllowanceEvent {
+                supporter: supporter.clone(),
+                token: subscription.token,
+                subscription_id,
+                live_until_ledger: expiration_ledger,
+            }
+            .publish(&env);
+        }
 
         SubscriptionCancelledEvent {
             supporter,
@@ -1521,7 +1522,8 @@ mod tests {
 
     use super::*;
     use creator_registry::{CreatorRegistryContract, CreatorRegistryContractClient};
-    use soroban_sdk::testutils::{Address as _, Ledger};
+    use soroban_sdk::events::Event as _;
+    use soroban_sdk::testutils::{Address as _, Events as _, Ledger};
     use soroban_sdk::token::StellarAssetClient;
 
     fn create_token_contract(env: &Env, admin: &Address) -> Address {
@@ -2545,6 +2547,75 @@ mod tests {
         let donation = donation_client.charge_subscription(&executor, &id_b);
         assert_eq!(donation.amount, 300);
         assert_eq!(token_client.balance(&creator_b), 300);
+    }
+
+    #[test]
+    fn test_partial_cancel_replaces_a_long_allowance_expiry() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+        let interval = 1_000;
+        let cancelled_at = 100;
+        let replacement_expiry = cancelled_at + common::subscription_bump_amount(interval);
+        let original_expiry = replacement_expiry + 1_000;
+        env.ledger().with_mut(|li| {
+            li.timestamp = 1_000;
+            li.sequence_number = cancelled_at;
+            // Keep the SAC instance live when we advance past the new allowance expiry.
+            li.min_persistent_entry_ttl = original_expiry;
+            li.max_entry_ttl = original_expiry + 1_000;
+        });
+
+        let (admin, donation_client, _registry_client) = setup(&env);
+        let supporter = Address::generate(&env);
+        let creator = Address::generate(&env);
+        let token_address = create_token_contract(&env, &admin);
+        donation_client.add_allowed_token(&token_address);
+        let token_client = token::Client::new(&env, &token_address);
+        let id = donation_client.subscribe(&supporter, &creator, &token_address, &500, &interval);
+        donation_client.subscribe(
+            &supporter,
+            &Address::generate(&env),
+            &token_address,
+            &300,
+            &interval,
+        );
+        token_client.approve(&supporter, &donation_client.address, &800, &original_expiry);
+
+        donation_client.cancel_subscription(&supporter, &id);
+
+        assert_eq!(
+            env.events()
+                .all()
+                .filter_by_contract(&donation_client.address),
+            [
+                SubscriptionAllowanceEvent {
+                    supporter: supporter.clone(),
+                    token: token_address,
+                    subscription_id: id,
+                    live_until_ledger: replacement_expiry,
+                }
+                .to_xdr(&env, &donation_client.address),
+                SubscriptionCancelledEvent {
+                    supporter: supporter.clone(),
+                    creator,
+                    subscription_id: id,
+                }
+                .to_xdr(&env, &donation_client.address),
+            ]
+        );
+
+        env.ledger()
+            .with_mut(|li| li.sequence_number = replacement_expiry);
+        assert_eq!(
+            token_client.allowance(&supporter, &donation_client.address),
+            300
+        );
+        env.ledger()
+            .with_mut(|li| li.sequence_number = replacement_expiry + 1);
+        assert_eq!(
+            token_client.allowance(&supporter, &donation_client.address),
+            0
+        );
     }
 
     #[test]
