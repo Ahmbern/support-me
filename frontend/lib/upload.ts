@@ -41,6 +41,11 @@ function validateImageDimensions(file: File): Promise<{ width: number; height: n
  * signs for a signed-in creator, so it must travel with the request.
  * Throws UploadError with a user-facing message on any validation or transport
  * failure.
+ *
+ * `token` is the caller's auth token (from useAuth()) — the signing route
+ * requires it (#364) and has no other way to see the session, since the
+ * backend's session cookie is scoped to the backend's own origin, not this
+ * frontend route's.
  */
 export async function uploadAvatar(file: File, token: string | null): Promise<string> {
   if (!ALLOWED_TYPES.includes(file.type)) {
@@ -67,7 +72,7 @@ export async function uploadAvatar(file: File, token: string | null): Promise<st
   try {
     const res = await fetch('/api/cloudinary-sign', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));

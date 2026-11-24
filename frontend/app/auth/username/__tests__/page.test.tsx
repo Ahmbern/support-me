@@ -137,6 +137,26 @@ describe('CreateUsernamePage', () => {
     expect(screen.getByText('https://example.com/')).toBeInTheDocument();
   });
 
+  it('shows the server-side reserved-username error (#387)', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetch(false, {
+        error: 'Validation failed',
+        code: 'VALIDATION_ERROR',
+        details: [{ path: 'username', message: 'This username is reserved and cannot be used' }],
+      })
+    );
+    const user = userEvent.setup();
+    render(<CreateUsernamePage />);
+
+    await user.type(screen.getByLabelText('Username'), 'admin');
+    await user.click(screen.getByRole('button', { name: /create profile/i }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'This username is reserved and cannot be used'
+    );
+  });
+
   it('creates the username and routes to /app on success', async () => {
     const user = userEvent.setup();
     render(<CreateUsernamePage />);

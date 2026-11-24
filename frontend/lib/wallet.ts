@@ -1,4 +1,4 @@
-import { StellarWalletsKit } from '@creit.tech/stellar-wallets-kit';
+import { StellarWalletsKit, Networks } from '@creit.tech/stellar-wallets-kit';
 import { FreighterModule } from '@creit.tech/stellar-wallets-kit/modules/freighter';
 import { xBullModule } from '@creit.tech/stellar-wallets-kit/modules/xbull';
 import { AlbedoModule } from '@creit.tech/stellar-wallets-kit/modules/albedo';
@@ -6,6 +6,19 @@ import { RabetModule } from '@creit.tech/stellar-wallets-kit/modules/rabet';
 import { LobstrModule } from '@creit.tech/stellar-wallets-kit/modules/lobstr';
 import * as StellarSdk from '@stellar/stellar-sdk';
 import { NETWORK_PASSPHRASE, horizonServer } from './stellarNetwork';
+
+/**
+ * Raised (before any signature is requested) when the connected wallet reports
+ * a network other than the one SupportMe signs on. The message deliberately
+ * matches the WRONG_NETWORK heuristics in lib/walletErrors.ts so downstream
+ * error mapping (lib/failures.ts) recognises it even after it has been wrapped.
+ */
+export class WrongNetworkError extends Error {
+  constructor(message = 'Wrong network: your wallet is set to a different network than the Stellar Testnet.') {
+    super(message);
+    this.name = 'WrongNetworkError';
+  }
+}
 
 let initialized = false;
 
@@ -72,6 +85,7 @@ interface MockWallet {
     address: string
   ) => Promise<{ signedTxXdr: string; signerAddress?: string }>;
   signMessage?: (message: string, address: string) => Promise<string>;
+  getNetwork?: () => Promise<{ network: string; networkPassphrase: string }>;
 }
 
 declare global {
@@ -83,7 +97,7 @@ declare global {
 // Opens the built-in wallet picker modal (Freighter, xBull, Albedo, Rabet, Lobstr)
 // and returns the connected public address.
 export const connectWallet = async (): Promise<string | null> => {
-  if (typeof window !== 'undefined' && window.__SUPPORTME_MOCK_WALLET__?.connectWallet) {
+  if (process.env.NEXT_PUBLIC_E2E === 'true' && typeof window !== 'undefined' && window.__SUPPORTME_MOCK_WALLET__?.connectWallet) {
     return window.__SUPPORTME_MOCK_WALLET__.connectWallet();
   }
   ensureInit();
@@ -105,11 +119,45 @@ export const connectWallet = async (): Promise<string | null> => {
 };
 
 export const disconnectWallet = async (): Promise<void> => {
-  if (typeof window !== 'undefined' && window.__SUPPORTME_MOCK_WALLET__?.disconnectWallet) {
+  if (process.env.NEXT_PUBLIC_E2E === 'true' && typeof window !== 'undefined' && window.__SUPPORTME_MOCK_WALLET__?.disconnectWallet) {
     return window.__SUPPORTME_MOCK_WALLET__.disconnectWallet();
   }
   if (!initialized) return;
   await StellarWalletsKit.disconnect();
+};
+
+/**
+ * Reads the connected wallet's current network via the wallet kit (where the
+ * selected wallet module supports it). Returns null when the wallet doesn't
+ * expose its network (or nothing is connected) — callers must treat that as
+ * "unknown", not as a mismatch.
+ */
+export const getWalletNetwork = async (): Promise<{ network: string; networkPassphrase: string } | null> => {
+  if (process.env.NEXT_PUBLIC_E2E === 'true' && typeof window !== 'undefined' && window.__SUPPORTME_MOCK_WALLET__?.getNetwork) {
+    return window.__SUPPORTME_MOCK_WALLET__.getNetwork();
+  }
+  if (!initialized) return null;
+  try {
+    return await StellarWalletsKit.getNetwork();
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * true = the wallet reports Testnet, false = it provably reports another
+ * network, null = the wallet doesn't expose its network.
+ */
+export const isWalletOnTestnet = async (): Promise<boolean | null> => {
+  const net = await getWalletNetwork();
+  if (!net) return null;
+  return net.networkPassphrase === Networks.TESTNET;
+};
+
+const assertWalletOnTestnet = async (): Promise<void> => {
+  if ((await isWalletOnTestnet()) === false) {
+    throw new WrongNetworkError();
+  }
 };
 
 // Signs an XDR transaction using whichever wallet the user picked in the modal.
@@ -117,7 +165,11 @@ export const signTransaction = async (
   xdr: string,
   address: string
 ): Promise<{ signedTxXdr: string; signerAddress?: string }> => {
-  if (typeof window !== 'undefined' && window.__SUPPORTME_MOCK_WALLET__?.signTransaction) {
+  // Refuse to even ask for a signature when the wallet reports a network
+  // mismatch — otherwise the failure surfaces later as an opaque
+  // "signature declined" (see lib/failures.ts).
+  await assertWalletOnTestnet();
+  if (process.env.NEXT_PUBLIC_E2E === 'true' && typeof window !== 'undefined' && window.__SUPPORTME_MOCK_WALLET__?.signTransaction) {
     return window.__SUPPORTME_MOCK_WALLET__.signTransaction(xdr, address);
   }
   ensureInit();
@@ -134,7 +186,7 @@ export const signTransaction = async (
 // Signs an arbitrary text message (used for the wallet sign-in challenge).
 // Returns the base64-encoded signed message.
 export const signMessage = async (message: string, address: string): Promise<string> => {
-  if (typeof window !== 'undefined' && window.__SUPPORTME_MOCK_WALLET__?.signMessage) {
+  if (process.env.NEXT_PUBLIC_E2E === 'true' && typeof window !== 'undefined' && window.__SUPPORTME_MOCK_WALLET__?.signMessage) {
     return window.__SUPPORTME_MOCK_WALLET__.signMessage(message, address);
   }
   ensureInit();
@@ -154,7 +206,7 @@ export const signMessage = async (message: string, address: string): Promise<str
  * a changeTrust operation. The asset issuer must be configured in env vars.
  */
 export const addTrustline = async (assetCode: string, address: string): Promise<string> => {
-  if (typeof window !== 'undefined' && window.__SUPPORTME_MOCK_WALLET__?.signTransaction) {
+  if (process.env.NEXT_PUBLIC_E2E === 'true' && typeof window !== 'undefined' && window.__SUPPORTME_MOCK_WALLET__?.signTransaction) {
     // Mock implementation would go here
     throw new Error('Mock trustline not implemented');
   }

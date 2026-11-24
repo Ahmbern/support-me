@@ -10,11 +10,13 @@ import {
   SUBSCRIPTION_CANCELLED_EVENT,
   GOAL_UPDATED_EVENT,
   DONATION_RECORDED_EVENT,
+  SUBSCRIPTION_CHARGE_FAILED_EVENT,
   DonationEvent,
   SubscriptionCreatedEvent,
   SubscriptionCancelledEvent,
   GoalUpdatedEvent,
   DonationRecordedEvent,
+  SubscriptionChargeFailedEvent,
   eventBus,
 } from "./eventBus";
 import { applyDonationToGoals } from "./goalService";
@@ -68,6 +70,46 @@ export interface RawEvent {
 
 export function decodeScVal(base64Xdr: string): unknown {
   return scValToNative(xdr.ScVal.fromXDR(base64Xdr, "base64"));
+}
+
+/**
+ * Normalizes a decoded `ChargeError` event field (#283) to its variant
+ * name. `scValToNative` represents a `ScVal::Error(ScError::Contract(code))`
+ * — which is how a `#[contracterror]` enum used as event data decodes — as
+ * a plain `{ type: "contract", code: <number> }` object; this also accepts
+ * a bare number/bigint or an `Error`-shaped value embedding
+ * `Error(Contract, #<code>)` text, so the listener doesn't silently drop
+ * the field if a future SDK version changes that representation. Falls
+ * back to `InsufficientAllowance` (code 1, the first declared variant)
+ * only if nothing recognizable is found, to keep `lastError` typed rather
+ * than `undefined`; the raw event is still logged by the caller via
+ * `evt.id`/`evt.txHash` for diagnosis if that fallback is wrong.
+ */
+function normalizeChargeErrorReason(
+  value: unknown
+): "InsufficientAllowance" | "InsufficientBalance" {
+  const CODE_TO_REASON: Record<number, "InsufficientAllowance" | "InsufficientBalance"> = {
+    1: "InsufficientAllowance",
+    2: "InsufficientBalance",
+  };
+  if (typeof value === "number" || typeof value === "bigint") {
+    return CODE_TO_REASON[Number(value)] ?? "InsufficientAllowance";
+  }
+  if (
+    value &&
+    typeof value === "object" &&
+    "code" in value &&
+    typeof (value as { code: unknown }).code === "number"
+  ) {
+    return CODE_TO_REASON[(value as { code: number }).code] ?? "InsufficientAllowance";
+  }
+  const text = value instanceof Error ? value.message : String(value);
+  const match = /#(\d+)/.exec(text);
+  if (match) {
+    return CODE_TO_REASON[Number(match[1])] ?? "InsufficientAllowance";
+  }
+  if (/InsufficientBalance/i.test(text)) return "InsufficientBalance";
+  return "InsufficientAllowance";
 }
 
 async function rpcCall<T>(
@@ -182,27 +224,27 @@ export class SorobanEventListener {
 
     switch (eventType) {
       case "donated": {
+        const donor = topics[1] as string;
+        const creator = topics[2] as string;
         const value = decodeScVal(evt.value) as {
           amount: bigint;
           memo?: string;
           timestamp: bigint;
           token?: string;
           donation_id?: bigint | number;
-          fee_amount?: bigint;
           subscription_id?: bigint | number | null;
         };
 
+        const currency = resolveTokenCurrency(
+          value.token ? String(value.token) : undefined
+        );
+
         const donationId =
           value.donation_id != null ? Number(value.donation_id) : undefined;
-        const feeAmount =
-          value.fee_amount != null ? value.fee_amount.toString() : undefined;
         const subId =
           value.subscription_id != null
             ? Number(value.subscription_id)
             : undefined;
-        const donor = topics[1] as string;
-        const creator = topics[2] as string;
-        const currency = resolveTokenCurrency(value.token ? String(value.token) : undefined);
 
         const payload: DonationEvent = {
           donor,
@@ -214,7 +256,6 @@ export class SorobanEventListener {
           ledger: evt.ledger,
           txHash: evt.txHash,
           donationId,
-          feeAmount,
           subscriptionId: subId,
         };
 
@@ -341,6 +382,47 @@ export class SorobanEventListener {
           console.error(
             `SorobanEventListener: error reconciling creator goal for ${creatorAddress}:`,
             (err as Error).message,
+          );
+        }
+        return true;
+      }
+
+      case "sub_failed": {
+        const value = decodeScVal(evt.value) as {
+          subscription_id: bigint | number;
+          reason: unknown;
+        };
+
+        const subId = Number(value.subscription_id);
+        const reason = normalizeChargeErrorReason(value.reason);
+
+        const payload: SubscriptionChargeFailedEvent = {
+          supporter: topics[1] as string,
+          creator: topics[2] as string,
+          subscriptionId: subId,
+          reason,
+          ledger: evt.ledger,
+          txHash: evt.txHash,
+        };
+
+        eventBus.emit(SUBSCRIPTION_CHARGE_FAILED_EVENT, payload);
+
+        // State Reconciliation Flow:
+        // Persist the decoded failure reason on the subscription so the
+        // backend (and anything reading Subscription.lastError) can tell an
+        // allowance problem from a balance problem without the executor
+        // having to have been the one to observe the failure — the
+        // executor's own tick may be lagging or the charge may have failed
+        // from a path other than this backend's executor key.
+        try {
+          await prisma.subscription.updateMany({
+            where: { onChainId: subId },
+            data: { lastError: `${reason}: on-chain charge failed (${evt.txHash})` },
+          });
+        } catch (err) {
+          console.error(
+            `SorobanEventListener: error reconciling sub_failed for subscription #${subId}:`,
+            (err as Error).message
           );
         }
         return true;

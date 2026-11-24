@@ -29,3 +29,9 @@ skills-lock.json
 # Sentry scaffolded examples
 frontend/app/api/sentry-example-api/
 frontend/app/sentry-example-page/
+
+# One-off scratch scripts (e.g. a throwaway script used once to resolve a
+# merge conflict) should never be committed at the repo root.
+/fix_*.py
+/resolve*.py
+/extract.py

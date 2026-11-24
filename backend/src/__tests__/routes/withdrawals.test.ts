@@ -106,7 +106,8 @@ describe("POST /api/withdrawals", () => {
       .set("Authorization", `Bearer ${token}`)
       .send({ creatorUsername: "bob", amountIn: 10, anchorTxId: "tx-1" });
 
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("FORBIDDEN");
     expect(mockedPrisma.withdrawal.create).not.toHaveBeenCalled();
   });
 
@@ -120,7 +121,7 @@ describe("POST /api/withdrawals", () => {
       amountOut: 9.5,
       currency: "USDC",
       anchorTxId: "tx-1",
-      status: "completed",
+      status: "pending_anchor",
     };
     mockedPrisma.withdrawal.create.mockResolvedValue(created);
 
@@ -138,6 +139,8 @@ describe("POST /api/withdrawals", () => {
 
     expect(res.status).toBe(201);
     expect(res.body).toEqual(created);
+    // The default `status` is "completed", but an unconfirmed self-report
+    // can never be stored as completed (#393), so it is downgraded.
     expect(mockedPrisma.withdrawal.create).toHaveBeenCalledWith({
       data: {
         creatorId: 7,
@@ -147,9 +150,124 @@ describe("POST /api/withdrawals", () => {
         currency: "USDC",
         anchorTxId: "tx-1",
         stellarTxId: "stellar-1",
-        status: "completed",
+        status: "pending_anchor",
+        verified: false,
       },
     });
+  });
+
+  it("downgrades a client-claimed completed status to pending_anchor (#393)", async () => {
+    mockedPrisma.creator.findUnique.mockResolvedValue({ id: 7, userId: 1, username: "bob" });
+    mockedPrisma.withdrawal.findUnique.mockResolvedValue(null);
+    mockedPrisma.withdrawal.create.mockResolvedValue({ id: 1 });
+
+    await request(app)
+      .post("/api/withdrawals")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        creatorUsername: "bob",
+        amountIn: 10,
+        anchorTxId: "tx-1",
+        status: "completed",
+      });
+
+    expect(mockedPrisma.withdrawal.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: "pending_anchor" }) })
+    );
+  });
+
+  it("stores a non-completed status as reported (#393)", async () => {
+    mockedPrisma.creator.findUnique.mockResolvedValue({ id: 7, userId: 1, username: "bob" });
+    mockedPrisma.withdrawal.findUnique.mockResolvedValue(null);
+    mockedPrisma.withdrawal.create.mockResolvedValue({ id: 1 });
+
+    await request(app)
+      .post("/api/withdrawals")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        creatorUsername: "bob",
+        amountIn: 10,
+        anchorTxId: "tx-1",
+        status: "error",
+      });
+
+    expect(mockedPrisma.withdrawal.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: "error" }) })
+    );
+  });
+
+  it("stores verified: false regardless of the status the client sends (#393)", async () => {
+    mockedPrisma.creator.findUnique.mockResolvedValue({ id: 7, userId: 1, username: "bob" });
+    mockedPrisma.withdrawal.findUnique.mockResolvedValue(null);
+    mockedPrisma.withdrawal.create.mockResolvedValue({ id: 1 });
+
+    await request(app)
+      .post("/api/withdrawals")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        creatorUsername: "bob",
+        amountIn: 10,
+        anchorTxId: "tx-1",
+        status: "completed",
+      });
+
+    expect(mockedPrisma.withdrawal.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ verified: false }) })
+    );
+  });
+
+  it("rejects a status outside the SEP-24 withdraw status enum (#393)", async () => {
+    mockedPrisma.creator.findUnique.mockResolvedValue({ id: 7, userId: 1, username: "bob" });
+
+    const res = await request(app)
+      .post("/api/withdrawals")
+      .set("Authorization", `Bearer ${token}`)
+      .send({
+        creatorUsername: "bob",
+        amountIn: 10,
+        anchorTxId: "tx-1",
+        status: "not_a_real_sep24_status",
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("VALIDATION_ERROR");
+    expect(mockedPrisma.withdrawal.create).not.toHaveBeenCalled();
+  });
+
+  it("accepts every SEP-24 withdraw status value (#393)", async () => {
+    mockedPrisma.creator.findUnique.mockResolvedValue({ id: 7, userId: 1, username: "bob" });
+    mockedPrisma.withdrawal.findUnique.mockResolvedValue(null);
+
+    const sep24Statuses = [
+      "incomplete",
+      "pending_user_transfer_start",
+      "pending_anchor",
+      "pending_stellar",
+      "pending_external",
+      "completed",
+      "refunded",
+      "expired",
+      "no_market",
+      "too_small",
+      "too_large",
+      "error",
+    ];
+
+    for (const status of sep24Statuses) {
+      mockedPrisma.withdrawal.create.mockResolvedValue({ id: 1, status });
+
+      const res = await request(app)
+        .post("/api/withdrawals")
+        .set("Authorization", `Bearer ${token}`)
+        .send({
+          creatorUsername: "bob",
+          amountIn: 10,
+          anchorTxId: `tx-${status}`,
+          status,
+        });
+
+      expect(res.status).toBe(201);
+    }
   });
 
   it("is idempotent: a duplicate anchorTxId returns the existing record", async () => {

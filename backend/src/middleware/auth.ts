@@ -1,7 +1,8 @@
 import { Request, RequestHandler } from 'express';
-import * as jwt from 'jsonwebtoken';
-import { UnauthorizedError } from '../errors/AppError';
-import { getJwtSecret } from '../config';
+import { ForbiddenError, UnauthorizedError } from '../errors/AppError';
+import { getAllowedOrigins } from '../config';
+import { signToken, verifyToken } from '../lib/tokens';
+import type { TokenPayload } from '../lib/tokens';
 import prisma from '../prisma';
 import { TtlCache } from '../services/ttlCache';
 import { asyncHandler } from './asyncHandler';
@@ -45,6 +46,12 @@ async function isUserDeleted(userId: number): Promise<boolean> {
   return cached !== null;
 }
 
+export function parseCookie(header: string | undefined, key: string): string | undefined {
+  if (!header) return undefined;
+  const match = header.match(new RegExp(`(?:^|;\\s*)${key}=([^;]*)`));
+  return match ? decodeURIComponent(match[1]) : undefined;
+}
+
 // Typed as a plain `RequestHandler` (not `(req: AuthRequest, ...) => void`) so
 // it can be passed straight to `router.use`/`router.get` etc. without an
 // `as any` cast at every call site: a handler accepting the narrower
@@ -53,18 +60,26 @@ async function isUserDeleted(userId: number): Promise<boolean> {
 // Express instance. The cast narrows in exactly one place instead of 16.
 export const authMiddleware: RequestHandler = asyncHandler(async (req, res, next) => {
   const authReq = req as AuthRequest;
-  const token = authReq.headers.authorization?.split(' ')[1];
+  const authHeader = authReq.headers.authorization?.split(' ')[1];
+  const cookieToken = parseCookie(req.headers.cookie, 'token');
+  const token = authHeader || cookieToken;
 
   if (!token) {
     return next(new UnauthorizedError('No token provided'));
   }
 
-  let decoded: { id: number; walletAddress: string | null };
+  // CSRF protection for cookie-based state-changing requests (#366)
+  if (!authHeader && cookieToken && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+    const origin = req.headers.origin || (req.headers.referer ? new URL(req.headers.referer).origin : undefined);
+    const allowed = getAllowedOrigins().map((o) => o.replace(/\/$/, ''));
+    if (origin && !allowed.includes(origin.replace(/\/$/, ''))) {
+      return next(new ForbiddenError('Cross-site request forgery blocked'));
+    }
+  }
+
+  let decoded: TokenPayload;
   try {
-    decoded = jwt.verify(token, getJwtSecret()) as {
-      id: number;
-      walletAddress: string | null;
-    };
+    decoded = verifyToken(token);
   } catch {
     return next(new UnauthorizedError('Invalid token'));
   }
@@ -84,9 +99,5 @@ export const authMiddleware: RequestHandler = asyncHandler(async (req, res, next
 });
 
 export const generateToken = (userId: number, walletAddress: string | null): string => {
-  return jwt.sign(
-    { id: userId, walletAddress },
-    getJwtSecret(),
-    { expiresIn: '7d' }
-  );
+  return signToken(userId, walletAddress);
 };

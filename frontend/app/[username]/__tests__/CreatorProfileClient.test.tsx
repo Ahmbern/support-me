@@ -4,7 +4,7 @@ import { render, screen, waitFor, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import CreatorProfileClient from '@/app/[username]/CreatorProfileClient';
 import { useAuth } from '@/context/AuthContext';
-import { connectWallet } from '@/lib/wallet';
+import { connectWallet, isWalletOnTestnet } from '@/lib/wallet';
 
 // CreatorProfileClient unwraps the `params` prop with React's use(), which
 // suspends on an unresolved promise — App Router provides a Suspense
@@ -39,6 +39,7 @@ vi.mock('@hugeicons/core-free-icons', async () => {
 vi.mock('@/lib/wallet', () => ({
   connectWallet: vi.fn(),
   disconnectWallet: vi.fn(),
+  isWalletOnTestnet: vi.fn(),
 }));
 
 vi.mock('@/lib/notify', () => ({
@@ -151,6 +152,7 @@ class FakeLocalStorage {
 
 const mockUseAuth = vi.mocked(useAuth);
 const mockConnectWallet = vi.mocked(connectWallet);
+const mockIsWalletOnTestnet = vi.mocked(isWalletOnTestnet);
 
 const baseCreator = {
   id: 1,
@@ -197,6 +199,9 @@ function mockFetchSequence(handlers: Record<string, unknown>) {
 describe('CreatorProfileClient', () => {
   beforeEach(() => {
     mockLoadAccount.mockResolvedValue({ balances: [] });
+    // Unknown network by default: the wallet doesn't report one, so nothing
+    // is blocked (tests override this to simulate a Mainnet wallet).
+    mockIsWalletOnTestnet.mockResolvedValue(null);
     mockUseAuth.mockReturnValue({
       user: null,
       token: null,
@@ -215,6 +220,59 @@ describe('CreatorProfileClient', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.clearAllMocks();
+  });
+
+  it('disconnects the opener before navigating the share tab to X', async () => {
+    const user = userEvent.setup();
+    const shareDocument = document.implementation.createHTMLDocument();
+    const shareWindow = { opener: window as Window | null, document: shareDocument };
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {
+      expect(shareWindow.opener).toBeNull();
+    });
+    const open = vi.spyOn(window, 'open').mockReturnValue(shareWindow as unknown as Window);
+    try {
+      mockFetchSequence({ '/api/creators/alice': baseCreator, '/api/goals/alice': { items: [] } });
+      await renderProfile('alice', 'en');
+      await user.click(await screen.findByRole('button', { name: 'Share on X/Twitter' }));
+
+      expect(open).toHaveBeenCalledWith('about:blank', '_blank');
+      const link = shareDocument.querySelector('a');
+      expect(link?.href).toMatch(/^https:\/\/x\.com\/intent\/post\?text=.+&url=.+/);
+      expect(link?.rel).toBe('noopener noreferrer');
+      expect(click).toHaveBeenCalledOnce();
+    } finally {
+      open.mockRestore();
+      click.mockRestore();
+    }
+  });
+
+  it('copies the profile link when the browser blocks the share tab', async () => {
+    const user = userEvent.setup();
+    const clipboard = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined);
+    const open = vi.spyOn(window, 'open').mockReturnValue(null);
+    try {
+      mockFetchSequence({ '/api/creators/alice': baseCreator, '/api/goals/alice': { items: [] } });
+      await renderProfile('alice', 'en');
+      await user.click(await screen.findByRole('button', { name: 'Share on X/Twitter' }));
+
+      expect(clipboard).toHaveBeenCalledWith(
+        `${process.env.NEXT_PUBLIC_SITE_URL || 'https://support-mee.vercel.app'}/alice`
+      );
+    } finally {
+      open.mockRestore();
+      clipboard.mockRestore();
+    }
+  });
+
+  it('explains why tips are unavailable before asking the supporter to connect', async () => {
+    mockFetchSequence({
+      '/api/creators/alice': { ...baseCreator, walletAddress: null },
+      '/api/goals/alice': { items: [] },
+    });
+    await renderProfile('alice');
+    await waitFor(() => expect(screen.getByText(/not accepting tips yet/)).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: 'Connect Wallet' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Send Donation' })).not.toBeInTheDocument();
   });
 
   it('renders a progress bar for every active goal, using server-computed totals', async () => {
@@ -515,6 +573,36 @@ describe('CreatorProfileClient', () => {
     });
   });
 
+  describe('recurring donations message handling (#237)', () => {
+    it('disables message input and shows hint when recurring is checked', async () => {
+      mockFetchSequence({
+        '/api/creators/alice': baseCreator,
+        '/api/goals/alice': { items: [] },
+      });
+      mockConnectWallet.mockResolvedValue('GDONORXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX');
+
+      await renderProfile('alice');
+      await waitFor(() => expect(screen.getByText('Alice')).toBeInTheDocument());
+      await userEvent.click(screen.getByRole('button', { name: /connect wallet/i }));
+
+      const messageInput = screen.getByLabelText(/message/i);
+      expect(messageInput).toBeEnabled();
+
+      const recurringCheckbox = screen.getByRole('checkbox', { name: /make it recurring/i });
+      expect(recurringCheckbox).not.toBeChecked();
+
+      await userEvent.click(recurringCheckbox);
+      expect(recurringCheckbox).toBeChecked();
+      expect(messageInput).toBeDisabled();
+      expect(screen.getByText(/messages apply to one-time tips only/i)).toBeInTheDocument();
+
+      await userEvent.click(recurringCheckbox);
+      expect(recurringCheckbox).not.toBeChecked();
+      expect(messageInput).toBeEnabled();
+      expect(screen.queryByText(/messages apply to one-time tips only/i)).not.toBeInTheDocument();
+    });
+  });
+
   describe('language switcher', () => {
     let fakeLocalStorage: FakeLocalStorage;
 
@@ -636,7 +724,7 @@ describe('CreatorProfileClient', () => {
         await waitFor(() => expect(screen.getByText('Alice')).toBeInTheDocument());
 
         expect(screen.getByRole('combobox', { name: /language/i })).toHaveAccessibleDescription(
-          /this profile and the donation form only/i
+          /this profile and the donation form/i
         );
       });
     });

@@ -4,7 +4,7 @@ import { authMiddleware, AuthRequest } from "../middleware/auth";
 import { asyncHandler } from "../middleware/asyncHandler";
 import { validate } from "../middleware/validate";
 import { createWithdrawalSchema, listWithdrawalsQuerySchema } from "../schemas/withdrawals";
-import { NotFoundError, UnauthorizedError } from "../errors/AppError";
+import { ForbiddenError, NotFoundError, UnauthorizedError } from "../errors/AppError";
 
 const router = Router();
 
@@ -53,7 +53,7 @@ router.post(
     // Withdrawals are self-reported by the account holder after a cash-out, so
     // only the owner may record one against their own history.
     if (creator.userId !== req.user.id) {
-      throw new UnauthorizedError("You can only record withdrawals for your own profile");
+      throw new ForbiddenError("You can only record withdrawals for your own profile");
     }
 
     // Idempotent on the anchor transaction id: the completion path can fire more
@@ -65,6 +65,22 @@ router.post(
       return res.status(200).json(existing);
     }
 
+    // Self-reported, never trusted as real (#393): a withdrawal can only
+    // become `verified: true` through an independent confirmation against
+    // the anchor's `/transaction` endpoint or Horizon. That lookup isn't
+    // implemented yet, so every withdrawal is stored unverified, matching
+    // how donations already treat a client report, and is excluded from the
+    // dashboard's verified-only totals regardless of the status the client
+    // sent.
+    //
+    // A client claiming `completed` is the strongest case for mistrust: it
+    // asserts the cash-out already finished with no way here to confirm that
+    // against the anchor or chain. Store it as `pending_anchor` (SEP-24's
+    // "anchor hasn't confirmed yet" status) instead, so a completed record
+    // always reflects a real confirmation rather than a bare self-report.
+    // Any other status (`error`, `refunded`, etc.) is stored as reported.
+    const storedStatus = status === "completed" ? "pending_anchor" : status;
+
     const withdrawal = await prisma.withdrawal.create({
       data: {
         creatorId: creator.id,
@@ -74,7 +90,8 @@ router.post(
         currency,
         anchorTxId,
         stellarTxId,
-        status,
+        status: storedStatus,
+        verified: false,
       },
     });
 

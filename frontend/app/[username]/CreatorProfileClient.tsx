@@ -7,7 +7,7 @@ import { NextIntlClientProvider, useTranslations } from 'next-intl';
 import { notify } from '@/lib/notify';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { PartyIcon, TwitterIcon, LinkIcon } from '@hugeicons/core-free-icons';
-import { connectWallet, addTrustline } from '@/lib/wallet';
+import { connectWallet, addTrustline, isWalletOnTestnet } from '@/lib/wallet';
 import {
   categorizeWalletError,
   WALLET_INSTALL_LINKS,
@@ -42,7 +42,7 @@ interface Creator {
   id: number;
   username: string;
   displayName: string | null;
-  walletAddress: string;
+  walletAddress: string | null;
   bio: string | null;
   avatarUrl: string | null;
   socialLinks: Record<string, string> | null;
@@ -142,6 +142,7 @@ function CreatorProfileView({ username, locale, onLocaleChange }: CreatorProfile
   const [isUnfunded, setIsUnfunded] = useState(false);
   const [funding, setFunding] = useState(false);
   const [missingTrustline, setMissingTrustline] = useState(false);
+  const [wrongNetwork, setWrongNetwork] = useState(false);
 
   const [donationAmount, setDonationAmount] = useState('5');
   const [donationMessage, setDonationMessage] = useState('');
@@ -371,6 +372,28 @@ function CreatorProfileView({ username, locale, onLocaleChange }: CreatorProfile
     };
   }, [userAddress, assetCode, loadAssetBalance]);
 
+  // Re-reads the wallet's current network. Returns false (and raises the
+  // blocking notice) when it provably isn't Testnet; true otherwise —
+  // including when the wallet doesn't expose its network at all, in which
+  // case there is nothing to block on.
+  const ensureTestnetWallet = async (): Promise<boolean> => {
+    const onTestnet = await isWalletOnTestnet();
+    if (onTestnet === false) {
+      setWrongNetwork(true);
+      return false;
+    }
+    setWrongNetwork(false);
+    return true;
+  };
+
+  // Once the wallet has been switched to Testnet, clear the notice and refresh
+  // the balance the form will show.
+  const handleRecheckNetwork = async () => {
+    if (await ensureTestnetWallet()) {
+      if (userAddress) setBalance(await loadAssetBalance(userAddress, assetCode));
+    }
+  };
+
   const handleConnectWallet = async () => {
     setConnecting(true);
     try {
@@ -379,6 +402,7 @@ function CreatorProfileView({ username, locale, onLocaleChange }: CreatorProfile
       // address is null when the user closed the wallet picker without
       // connecting (see lib/wallet.ts) -- nothing to load or celebrate yet.
       if (!address) return;
+      if (!(await ensureTestnetWallet())) return;
       setBalance(await loadAssetBalance(address, assetCode));
       notify.success(t('walletConnected'));
     } catch (err) {
@@ -445,6 +469,9 @@ function CreatorProfileView({ username, locale, onLocaleChange }: CreatorProfile
       notify.error(t('cannotSendDonationTitle'), t('cannotSendDonationMessage'));
       return;
     }
+    // The user may have switched the wallet to Mainnet since connecting —
+    // check again before any transaction is built or signed.
+    if (!(await ensureTestnetWallet())) return;
 
     setSending(true);
     setTxStatus('building');
@@ -541,6 +568,11 @@ function CreatorProfileView({ username, locale, onLocaleChange }: CreatorProfile
         setUserAddress(address);
       }
       if (!address) {
+        setSending(false);
+        return;
+      }
+      // The wallet connected just above may itself be on the wrong network.
+      if (!(await ensureTestnetWallet())) {
         setSending(false);
         return;
       }
@@ -686,14 +718,6 @@ function CreatorProfileView({ username, locale, onLocaleChange }: CreatorProfile
   const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://support-mee.vercel.app';
   const profileUrl = `${SITE_URL}/${creator.username}`;
 
-  const handleShareOnTwitter = () => {
-    const text = encodeURIComponent(
-      tProfile('share.tweetText', { name: displayName, username: creator.username })
-    );
-    const url = encodeURIComponent(profileUrl);
-    window.open(`https://twitter.com/intent/tweet?text=${text}&url=${url}`, '_blank');
-  };
-
   const handleCopyLink = async () => {
     try {
       await navigator.clipboard.writeText(profileUrl);
@@ -701,6 +725,25 @@ function CreatorProfileView({ username, locale, onLocaleChange }: CreatorProfile
     } catch {
       notify.error(tProfile('share.copyFailed'));
     }
+  };
+
+  const handleShareOnX = () => {
+    // A noopener window.open returns null even when it opens successfully.
+    // Open a blank tab first so a null handle reliably triggers the fallback.
+    const shareWindow = window.open('about:blank', '_blank');
+    if (!shareWindow) {
+      void handleCopyLink();
+      return;
+    }
+
+    shareWindow.opener = null;
+    const text = tProfile('share.tweetText', { name: displayName, username: creator.username });
+    const params = new URLSearchParams({ text, url: profileUrl });
+    const link = shareWindow.document.createElement('a');
+    link.href = `https://x.com/intent/post?${params}`;
+    link.rel = 'noopener noreferrer';
+    shareWindow.document.body.append(link);
+    link.click();
   };
 
   const layout = THEME_LAYOUTS[creator.theme?.layout ?? 'default'];
@@ -758,7 +801,7 @@ function CreatorProfileView({ username, locale, onLocaleChange }: CreatorProfile
 
           <div className="flex items-center justify-center gap-2 mt-4">
             <button
-              onClick={handleShareOnTwitter}
+              onClick={handleShareOnX}
               className="btn-brutal btn-brutal-white px-3 py-2 text-sm flex items-center gap-2"
               aria-label={tProfile('share.shareAriaLabel')}
             >
@@ -840,7 +883,11 @@ function CreatorProfileView({ username, locale, onLocaleChange }: CreatorProfile
             </span>
           </div>
 
-          {sending ? (
+          {!creator.walletAddress ? (
+            <p role="status" className="text-sm text-muted font-medium">
+              {t('payoutUnavailable')}
+            </p>
+          ) : sending ? (
             <div className="py-2">
               <TipJarLoader fullScreen={false} />
               {(subscribeStep || (txStatus && statusLabels[txStatus])) && (
@@ -848,6 +895,18 @@ function CreatorProfileView({ username, locale, onLocaleChange }: CreatorProfile
                   {subscribeStep ?? statusLabels[txStatus as string]}
                 </p>
               )}
+            </div>
+          ) : wrongNetwork ? (
+            <div role="alert" className="card-brutal bg-brand-pink p-4 space-y-3">
+              <h3 className="font-extrabold text-ink">{t('wrongNetworkTitle')}</h3>
+              <p className="text-sm text-ink font-medium">{t('wrongNetworkMessage')}</p>
+              <button
+                type="button"
+                onClick={handleRecheckNetwork}
+                className="btn-brutal btn-brutal-primary w-full min-h-[48px]"
+              >
+                {t('wrongNetworkRecheck')}
+              </button>
             </div>
           ) : !userAddress ? (
             <button
@@ -946,7 +1005,7 @@ function CreatorProfileView({ username, locale, onLocaleChange }: CreatorProfile
                         <label htmlFor="donation-amount" className="block text-sm font-bold text-ink">
                           {t('amountLabel', { asset: assetCode })}
                         </label>
-                        <span className="text-xs text-muted font-bold" data-testid="min-donation-label">
+                        <span id="donation-amount-hint" className="text-xs text-muted font-bold" data-testid="min-donation-label">
                           {t('minDonation', { min: MIN_DONATION_AMOUNT, asset: assetCode })}
                         </span>
                       </div>
@@ -955,6 +1014,8 @@ function CreatorProfileView({ username, locale, onLocaleChange }: CreatorProfile
                         type="number"
                         min={MIN_DONATION_AMOUNT}
                         step="0.1"
+                        aria-invalid={!isAmountValid}
+                        aria-describedby={isAmountValid ? 'donation-amount-hint' : 'donation-amount-hint donation-amount-error'}
                         value={donationAmount}
                         onChange={(e) => {
                           setDonationAmount(e.target.value);
@@ -963,7 +1024,7 @@ function CreatorProfileView({ username, locale, onLocaleChange }: CreatorProfile
                         className={`input-brutal ${!isAmountValid ? 'border-red-500' : ''}`}
                       />
                       {!isAmountValid && (
-                        <p className="text-xs text-red-600 font-bold mt-1" role="alert">
+                        <p id="donation-amount-error" className="text-xs text-red-600 font-bold mt-1" role="alert">
                           {donationAmount.trim() === ''
                             ? t('amountRequired')
                             : t('amountInvalid')}
@@ -1019,14 +1080,23 @@ function CreatorProfileView({ username, locale, onLocaleChange }: CreatorProfile
                         value={donationMessage}
                         onChange={(e) => setDonationMessage(e.target.value)}
                         placeholder={t('messagePlaceholder')}
-                        className="input-brutal text-sm"
+                        disabled={recurring}
+                        aria-invalid={!recurring && memoTooLong}
+                        aria-describedby={recurring ? 'donation-message-recurring-hint' : memoTooLong ? 'donation-message-counter donation-message-error' : 'donation-message-counter'}
+                        className="input-brutal text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                         rows={3}
                       />
-                      <p className="text-xs text-muted mt-1 font-medium">
-                        {memoBytes}/{MAX_MEMO_LENGTH} bytes
-                      </p>
+                      {recurring ? (
+                        <p id="donation-message-recurring-hint" className="text-xs text-muted mt-1 font-medium" data-testid="recurring-message-hint">
+                          {t('recurringMessageHint')}
+                        </p>
+                      ) : (
+                        <p id="donation-message-counter" aria-live="polite" className="text-xs text-muted mt-1 font-medium">
+                          {memoBytes}/{MAX_MEMO_LENGTH} bytes
+                        </p>
+                      )}
                       {memoTooLong && (
-                        <p role="alert" className="text-xs text-red-600 mt-1">
+                        <p id="donation-message-error" role="alert" className="text-xs text-red-600 mt-1">
                           Message must be {MAX_MEMO_LENGTH} bytes or fewer.
                         </p>
                       )}
@@ -1045,7 +1115,9 @@ function CreatorProfileView({ username, locale, onLocaleChange }: CreatorProfile
 
                       {recurring && (
                         <div className="flex items-center gap-1.5">
+                          <label htmlFor="donation-interval" className="sr-only">{t('intervalLabel')}</label>
                           <select
+                            id="donation-interval"
                             value={intervalChoice}
                             onChange={(e) => setIntervalChoice(e.target.value as typeof intervalChoice)}
                             className="input-brutal text-sm py-1.5 w-auto min-h-[44px]"
@@ -1064,7 +1136,7 @@ function CreatorProfileView({ username, locale, onLocaleChange }: CreatorProfile
                               onChange={(e) => setCustomDays(e.target.value)}
                               aria-label={t('daysBetweenChargesLabel')}
                               title={t('daysBetweenChargesTitle', { max: MAX_CHARGE_INTERVAL_DAYS })}
-                              className="input-brutal text-sm py-1.5 w-14 min-h-[44px]"
+                              className="input-brutal text-sm py-1.5 w-20 min-h-[44px]"
                             />
                           )}
                         </div>

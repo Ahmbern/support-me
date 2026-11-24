@@ -10,6 +10,17 @@ interface User {
   email?: string | null;
 }
 
+function isStoredUser(value: unknown): value is User {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const user = value as Record<string, unknown>;
+  return (
+    typeof user.id === 'number' && Number.isSafeInteger(user.id) && user.id > 0 &&
+    // Twitter and magic-link accounts legitimately have no wallet yet.
+    (typeof user.walletAddress === 'string' || user.walletAddress === null) &&
+    (user.email === undefined || user.email === null || typeof user.email === 'string')
+  );
+}
+
 interface LoginResult {
   user: User;
   token: string;
@@ -26,10 +37,19 @@ interface AuthContextType {
   completeTwitterLogin: (code: string, state: string) => Promise<LoginResult>;
   requestMagicLink: (email: string) => Promise<void>;
   verifyMagicLink: (token: string) => Promise<LoginResult>;
-  logout: () => void;
+  logout: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+// Error responses from the auth proxy are not always JSON: a 502, a
+// rate-limit page or an HTML error page makes res.json() throw a
+// SyntaxError ("Unexpected token <"), which would replace the message the
+// caller was meant to see. Read the body defensively and fall back.
+async function readError(res: Response, fallback: string): Promise<string> {
+  const body = (await res.json().catch(() => ({}))) as { error?: unknown };
+  return typeof body.error === 'string' && body.error ? body.error : fallback;
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -41,34 +61,69 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    const syncSessionFromStorage = () => {
+      const savedToken = localStorage.getItem('authToken');
+      const savedUser = localStorage.getItem('authUser');
+
+      // The session token lives in an httpOnly cookie (#366), so it is not
+      // (and must not be) persisted in localStorage. The user profile is the
+      // only piece we keep client-side, so a reload must restore the session
+      // from `authUser` alone — requiring `authToken` here was the regression
+      // that dropped every signed-in session on refresh.
+      if (savedUser) {
+        try {
+          const parsed = JSON.parse(savedUser);
+          if (!isStoredUser(parsed)) throw new Error('invalid user');
+          setUser(parsed);
+          setToken(savedToken && savedToken.length > 0 ? savedToken : null);
+        } catch {
+          // Clear invalid stored data
+          localStorage.removeItem('authToken');
+          localStorage.removeItem('authUser');
+          setToken(null);
+          setUser(null);
+        }
+        return;
+      }
+
+      // A stray token without a user profile is not a usable session.
+      if (savedToken) {
+        localStorage.removeItem('authToken');
+      }
+      setToken(null);
+      setUser(null);
+    };
+
     // One-time sync FROM an external system (localStorage) on mount, which is
     // exactly what effects are for — not a derived-state anti-pattern. This
     // can't move to a `useState` lazy initializer because `localStorage`
     // isn't available during SSR; reading it outside an effect would cause a
     // hydration mismatch.
-    const savedToken = localStorage.getItem('authToken');
-    const savedUser = localStorage.getItem('authUser');
-    if (savedToken && savedUser) {
-      try {
-        // eslint-disable-next-line react-hooks/set-state-in-effect -- restoring session state from localStorage on mount, see comment above
-        setToken(savedToken);
-        setUser(JSON.parse(savedUser));
-      } catch {
-        // Clear invalid stored data
-        localStorage.removeItem('authToken');
-        localStorage.removeItem('authUser');
+    syncSessionFromStorage();
+
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === 'authToken' || event.key === 'authUser' || event.key === null) {
+        syncSessionFromStorage();
       }
-    }
+    };
+
+    window.addEventListener('storage', handleStorage);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- marks the one-time storage sync above as complete
     setLoading(false);
+
+    return () => {
+      window.removeEventListener('storage', handleStorage);
+    };
   }, []);
 
   // Every sign-in method (wallet, Twitter, magic link) ends the same way:
   // the backend returns the same LoginResult shape, so persisting the
   // session is identical regardless of how the user proved their identity.
+  // Session tokens are held in httpOnly cookies (#366) and not in localStorage.
   const persistSession = (data: LoginResult): LoginResult => {
     setToken(data.token);
     setUser(data.user);
-    localStorage.setItem('authToken', data.token);
+    localStorage.removeItem('authToken');
     localStorage.setItem('authUser', JSON.stringify(data.user));
     return data;
   };
@@ -86,10 +141,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ walletAddress: address }),
+      credentials: 'include',
     });
     if (!challengeRes.ok) {
-      const error = await challengeRes.json();
-      throw new Error(error.error || 'Failed to start sign-in challenge');
+      throw new Error(await readError(challengeRes, 'Failed to start sign-in challenge'));
     }
     const { message } = await challengeRes.json();
 
@@ -99,10 +154,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ walletAddress: address, signedMessage }),
+      credentials: 'include',
     });
     if (!verifyRes.ok) {
-      const error = await verifyRes.json();
-      throw new Error(error.error || 'Sign-in verification failed');
+      throw new Error(await readError(verifyRes, 'Sign-in verification failed'));
     }
     const data: LoginResult = await verifyRes.json();
 
@@ -110,10 +165,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const getTwitterRedirectUrl = async (): Promise<string> => {
-    const res = await fetch(`${API_URL}/api/auth/twitter`);
+    const res = await fetch(`${API_URL}/api/auth/twitter`, {
+      credentials: 'include',
+    });
     if (!res.ok) {
-      const error = await res.json();
-      throw new Error(error.error || 'Failed to start Twitter sign-in');
+      throw new Error(await readError(res, 'Failed to start Twitter sign-in'));
     }
     const { redirectUrl } = await res.json();
     return redirectUrl;
@@ -121,10 +177,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const completeTwitterLogin = async (code: string, state: string): Promise<LoginResult> => {
     const params = new URLSearchParams({ code, state });
-    const res = await fetch(`${API_URL}/api/auth/twitter/callback?${params.toString()}`);
+    const res = await fetch(`${API_URL}/api/auth/twitter/callback?${params.toString()}`, {
+      credentials: 'include',
+    });
     if (!res.ok) {
-      const error = await res.json();
-      throw new Error(error.error || 'Twitter sign-in failed');
+      throw new Error(await readError(res, 'Twitter sign-in failed'));
     }
     const data: LoginResult = await res.json();
 
@@ -136,10 +193,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email }),
+      credentials: 'include',
     });
     if (!res.ok) {
-      const error = await res.json();
-      throw new Error(error.error || 'Failed to send magic link');
+      throw new Error(await readError(res, 'Failed to send magic link'));
     }
   };
 
@@ -148,22 +205,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token }),
+      credentials: 'include',
     });
     if (!res.ok) {
-      const error = await res.json();
-      throw new Error(error.error || 'This magic link is invalid or has expired');
+      throw new Error(await readError(res, 'This magic link is invalid or has expired'));
     }
     const data: LoginResult = await res.json();
 
     return persistSession(data);
   };
 
-  const logout = () => {
+  const logout = async () => {
+    const res = await fetch(`${API_URL}/api/auth/logout`, {
+      method: 'POST',
+      credentials: 'include',
+    });
+    if (!res.ok) {
+      throw new Error('The server could not end your session.');
+    }
+
     setUser(null);
     setToken(null);
     localStorage.removeItem('authToken');
     localStorage.removeItem('authUser');
-    disconnectWallet().catch(() => {});
+    void disconnectWallet().catch(() => {});
   };
 
   return (

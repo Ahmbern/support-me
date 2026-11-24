@@ -22,7 +22,7 @@ import {
 import { challenges } from "./auth";
 import { verifyWalletOwnership } from "../services/walletProof";
 import { TtlCache } from "../services/ttlCache";
-import { toAmount } from "../lib/money";
+import { toAmount, MoneyValue } from "../lib/money";
 import { getCreatorStats } from "../services/creatorStats";
 
 const router = Router();
@@ -31,6 +31,15 @@ const router = Router();
 // Profiles change infrequently, so this reduces DB load while staying fresh.
 // Exported so tests can reset it between cases.
 export const creatorProfileCache = new TtlCache<Creator>(5 * 60 * 1000);
+
+export function formatCreator<T extends { presetAmounts?: unknown }>(creator: T): T {
+  if (!creator) return creator;
+  if (!Array.isArray(creator.presetAmounts)) return creator;
+  return {
+    ...creator,
+    presetAmounts: creator.presetAmounts.map((p: unknown) => toAmount(p as MoneyValue)),
+  };
+}
 
 interface LeaderboardEntry {
   rank: number;
@@ -108,35 +117,72 @@ router.get(
       limit: number;
     };
 
-    const where = q
-      ? {
-          OR: [
-            { username: { contains: q, mode: "insensitive" as const } },
-            { displayName: { contains: q, mode: "insensitive" as const } },
-          ],
-        }
-      : undefined;
+    const where: Prisma.CreatorWhereInput = {
+      walletAddress: { not: null },
+      ...(q
+        ? {
+            OR: [
+              { username: { contains: q, mode: "insensitive" as const } },
+              { displayName: { contains: q, mode: "insensitive" as const } },
+            ],
+          }
+        : {}),
+    };
 
-    const orderBy =
-      sort === "most-supported"
-        ? { donations: { _count: "desc" as const } }
-        : { createdAt: "desc" as const };
+    // Prisma 5 cannot filter a relation inside `orderBy`, so the verified
+    // count used for "most-supported" ranking is computed in SQL. Using the
+    // raw ordered ids and then reloading the rows keeps the same verified
+    // count in both the ranking and the `_count` returned to the client.
+    // `id` is always the final sort key so paging over ties is stable (#392).
+    const countSelect = {
+      select: { donations: { where: { verified: true } } },
+    } as const;
+    let creators: Array<Creator & { _count: { donations: number } }>;
 
-    const [creators, total] = await Promise.all([
-      prisma.creator.findMany({
+    if (sort === "most-supported") {
+      const ranked = await prisma.$queryRaw<Array<{ id: number }>>(Prisma.sql`
+        SELECT c.id
+        FROM "Creator" c
+        LEFT JOIN (
+          SELECT "creatorId", COUNT(*)::int AS "verifiedDonations"
+          FROM "Donation"
+          WHERE verified = true
+          GROUP BY "creatorId"
+        ) counts ON counts."creatorId" = c.id
+        WHERE c."walletAddress" IS NOT NULL
+          AND (
+            ${q ?? null}::text IS NULL
+            OR strpos(lower(c."username"), lower(${q ?? null}::text)) > 0
+            OR strpos(lower(coalesce(c."displayName", '')), lower(${q ?? null}::text)) > 0
+          )
+        ORDER BY COALESCE(counts."verifiedDonations", 0) DESC, c.id DESC
+        LIMIT ${limit} OFFSET ${(page - 1) * limit}
+      `);
+
+      const rows = ranked.length
+        ? await prisma.creator.findMany({
+            where: { id: { in: ranked.map((row) => row.id) } },
+            include: { _count: countSelect },
+          })
+        : [];
+      const byId = new Map(rows.map((row) => [row.id, row]));
+      creators = ranked
+        .map((row) => byId.get(row.id))
+        .filter((row): row is Creator & { _count: { donations: number } } => row !== undefined);
+    } else {
+      creators = await prisma.creator.findMany({
         where,
-        orderBy,
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         skip: (page - 1) * limit,
         take: limit,
-        include: {
-          _count: { select: { donations: { where: { verified: true } } } },
-        },
-      }),
-      prisma.creator.count({ where }),
-    ]);
+        include: { _count: countSelect },
+      });
+    }
+
+    const total = await prisma.creator.count({ where });
 
     return res.json({
-      items: creators,
+      items: creators.map(formatCreator),
       pagination: {
         page,
         limit,
@@ -160,7 +206,7 @@ router.get(
       throw new NotFoundError("Creator not found");
     }
 
-    return res.json(creator);
+    return res.json(formatCreator(creator));
   })
 );
 
@@ -190,19 +236,35 @@ router.get(
   "/leaderboard",
   validate({ query: leaderboardQuerySchema }),
   asyncHandler(async (req, res) => {
-    const { type, currency, page, limit } = req.query as unknown as {
+    const { type, currency, period, page, limit } = req.query as unknown as {
       type: "creators" | "supporters";
       currency: string;
+      period: "all" | "month" | "week";
       page: number;
       limit: number;
     };
 
-    const cacheKey = `${type}:${currency}`;
+    const now = new Date();
+    let periodStart: Date | undefined;
+    if (period === "month") {
+      periodStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    } else if (period === "week") {
+      periodStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+      const daysSinceMonday = (periodStart.getUTCDay() + 6) % 7;
+      periodStart.setUTCDate(periodStart.getUTCDate() - daysSinceMonday);
+    }
+
+    const cacheKey = `${type}:${currency}:${periodStart?.toISOString() ?? "all"}`;
     const { entries: allRanked, total } = await leaderboardCache.getOrSet(cacheKey, async () => {
+      const donationWhere = {
+        currency,
+        ...(periodStart ? { createdAt: { gte: periodStart } } : {}),
+      };
+
       if (type === "creators") {
         const grouped = await prisma.donation.groupBy({
           by: ["creatorId"],
-          where: { currency },
+          where: { ...donationWhere, creator: { walletAddress: { not: null } } },
           _sum: { amount: true },
           _count: { _all: true },
           orderBy: { _sum: { amount: "desc" } },
@@ -228,7 +290,7 @@ router.get(
 
       const grouped = await prisma.donation.groupBy({
         by: ["senderAddress"],
-        where: { currency },
+        where: donationWhere,
         _sum: { amount: true },
         _count: { _all: true },
         orderBy: { _sum: { amount: "desc" } },
@@ -271,7 +333,7 @@ router.get(
         return profile;
       });
 
-      return res.json(creator);
+      return res.json(formatCreator(creator));
     } catch (error) {
       // If cache fails, fall back to direct DB read
       if (error instanceof NotFoundError) {
@@ -285,7 +347,7 @@ router.get(
         throw new NotFoundError("Creator not found");
       }
 
-      return res.json(creator);
+      return res.json(formatCreator(creator));
     }
   })
 );
@@ -315,8 +377,8 @@ router.post(
     }
 
     // Default to the wallet the user signed in with; a magic-link/OAuth user
-    // with no wallet yet gets "" (payout wallet connected later).
-    const payoutWallet: string = walletAddress || req.user.walletAddress || "";
+    // with no wallet yet gets null (payout wallet connected later).
+    const payoutWallet: string | null = walletAddress || req.user.walletAddress || null;
     if (payoutWallet) {
       assertWalletOwnership(req.user, payoutWallet, walletSignature);
       await assertWalletAvailable(payoutWallet);
@@ -340,7 +402,7 @@ router.post(
       throw err;
     }
 
-    return res.status(201).json(creator);
+    return res.status(201).json(formatCreator(creator));
   })
 );
 
@@ -364,7 +426,7 @@ router.put(
     // A profile can only be edited by its owner — otherwise anyone could
     // overwrite another creator's payout wallet and redirect their donations.
     if (existing.userId !== req.user.id) {
-      throw new UnauthorizedError("You can only edit your own profile");
+      throw new ForbiddenError("You can only edit your own profile");
     }
 
     // Re-pointing the payout wallet needs proof of control and must not
@@ -387,8 +449,9 @@ router.put(
 
     // Invalidate cache when profile is updated
     creatorProfileCache.clear();
+    leaderboardCache.clear();
 
-    return res.json(creator);
+    return res.json(formatCreator(creator));
   })
 );
 
@@ -410,7 +473,7 @@ router.patch(
       throw new NotFoundError("Creator not found");
     }
     if (existing.userId !== req.user.id) {
-      throw new UnauthorizedError("You can only edit your own profile");
+      throw new ForbiddenError("You can only edit your own profile");
     }
 
     const creator = await prisma.creator.update({
@@ -420,7 +483,7 @@ router.patch(
 
     creatorProfileCache.clear();
 
-    return res.json(creator);
+    return res.json(formatCreator(creator));
   })
 );
 

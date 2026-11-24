@@ -96,7 +96,7 @@ export async function notifyGoalsReached(goals: Goal[]): Promise<void> {
           to: creator.user.email,
           ...goalReachedEmail({
             goalTitle: goal.title,
-            targetAmount: goal.targetAmount,
+            targetAmount: toAmount(goal.targetAmount),
             currency: goal.currency,
             dashboardUrl: dashboardUrl(),
           }),

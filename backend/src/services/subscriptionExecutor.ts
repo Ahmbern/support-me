@@ -5,6 +5,8 @@ import {
   Keypair,
   TransactionBuilder,
   nativeToScVal,
+  scValToNative,
+  xdr,
 } from "@stellar/stellar-sdk";
 import prisma from "../prisma";
 import { Subscription } from "@prisma/client";
@@ -19,6 +21,8 @@ import { applyDonationToGoals } from "./goalService";
 import { notifyGoalsReached } from "./donationNotifications";
 import { log } from "../lib/logger";
 import * as Sentry from "@sentry/node";
+import { hostname } from "node:os";
+import { randomUUID } from "node:crypto";
 
 import { config } from "../config";
 import { toAmount } from "../lib/money";
@@ -37,6 +41,26 @@ const getPollIntervalMs = (): number => {
 };
 
 /**
+ * How long a claim may be held before another instance may take it over
+ * (#394). Must comfortably exceed the longest possible charge attempt
+ * (`confirm()` alone waits up to 30s), so a slow-but-alive instance is not
+ * pre-empted mid-charge, while still letting a later tick recover a
+ * subscription from a crashed one.
+ */
+const getClaimTtlMs = (): number => {
+  const configured = Number(process.env.SUBSCRIPTION_EXECUTOR_CLAIM_TTL_MS);
+  return Number.isFinite(configured) && configured > 0 ? configured : 5 * 60_000;
+};
+
+/**
+ * Identifies this process's claims (#394). Only used for diagnostics (which
+ * instance holds a subscription) and to make a release conditional on still
+ * owning the claim, so an instance whose claim expired and was taken over
+ * cannot clear the new owner's claim.
+ */
+const EXECUTOR_INSTANCE_ID = `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
+
+/**
  * Errors that describe the executor's own account rather than the subscription
  * being charged (#279): an unfunded executor account or a fee it cannot cover.
  * Counting these against the subscriber would deactivate subscriptions and
@@ -53,6 +77,110 @@ const EXECUTOR_SIDE_ERROR_PATTERNS = [
 
 export function isExecutorSideChargeError(message: string): boolean {
   return EXECUTOR_SIDE_ERROR_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+/**
+ * The donation contract's `ChargeError` discriminants (#283), mirrored from
+ * `contracts/donation/src/lib.rs`'s `#[contracterror] enum ChargeError`.
+ * Soroban reports a contract revert's error code in both the simulation
+ * error string and a failed transaction's diagnostic text as
+ * `Error(Contract, #<code>)`; keep these two in sync with the Rust enum.
+ */
+export enum SubscriptionChargeErrorReason {
+  InsufficientAllowance = "InsufficientAllowance",
+  InsufficientBalance = "InsufficientBalance",
+  // #465: the contract re-validates the token allowlist and min/max bounds
+  // on every charge, not just at `subscribe` time, so an emergency token
+  // removal or a tightened limit can fail an otherwise-due charge too.
+  TokenNotAllowed = "TokenNotAllowed",
+  AmountOutOfBounds = "AmountOutOfBounds",
+}
+
+const CONTRACT_ERROR_CODE_TO_REASON: Record<number, SubscriptionChargeErrorReason> = {
+  1: SubscriptionChargeErrorReason.InsufficientAllowance,
+  2: SubscriptionChargeErrorReason.InsufficientBalance,
+  3: SubscriptionChargeErrorReason.TokenNotAllowed,
+  4: SubscriptionChargeErrorReason.AmountOutOfBounds,
+};
+
+/** Reverse of `CONTRACT_ERROR_CODE_TO_REASON`, for re-encoding a decoded reason back into its `Error(Contract, #<code>)` form. */
+const REASON_TO_CONTRACT_ERROR_CODE: Record<SubscriptionChargeErrorReason, number> =
+  Object.fromEntries(
+    Object.entries(CONTRACT_ERROR_CODE_TO_REASON).map(([code, reason]) => [reason, Number(code)])
+  ) as Record<SubscriptionChargeErrorReason, number>;
+
+/**
+ * Extracts the donation contract's `ChargeError` discriminant from a
+ * Soroban simulation or transaction failure message, e.g.
+ * `"... HostError: Error(Contract, #1) ..."`. Returns `undefined` when the
+ * message doesn't carry a recognized `Error(Contract, #<code>)` marker —
+ * e.g. an executor-side or network error — so callers fall back to the
+ * existing generic-message handling instead of misreporting a reason.
+ */
+export function decodeChargeErrorReason(
+  message: string
+): SubscriptionChargeErrorReason | undefined {
+  const match = /Error\(Contract,\s*#(\d+)\)/.exec(message);
+  if (!match) return undefined;
+  const code = Number(match[1]);
+  return CONTRACT_ERROR_CODE_TO_REASON[code];
+}
+
+/**
+ * Decodes a failed transaction's `ChargeError` reason, if any, from the
+ * diagnostic events a Soroban RPC node returns alongside a FAILED
+ * `getTransaction` result. A reverted `charge_subscription` call surfaces
+ * its returned contract error as an `ScVal::Error(ScError::Contract(code))`
+ * inside one of these events' decoded value; `scValToNative` turns that
+ * into a plain `{ type: "contract", code: <number> }` object (verified
+ * against the installed stellar-sdk version), matched below the same way
+ * `decodeChargeErrorReason` matches a simulation error string.
+ */
+export function decodeChargeErrorReasonFromDiagnostics(
+  diagnosticEventsXdr: xdr.DiagnosticEvent[] | undefined
+): SubscriptionChargeErrorReason | undefined {
+  if (!diagnosticEventsXdr?.length) return undefined;
+  for (const diagnostic of diagnosticEventsXdr) {
+    try {
+      const body = diagnostic.event().body().value();
+      const native = scValToNative(body.data());
+      let text: string;
+      if (
+        native &&
+        typeof native === "object" &&
+        "code" in native &&
+        typeof (native as { code: unknown }).code === "number"
+      ) {
+        text = `Error(Contract, #${(native as { code: number }).code})`;
+      } else {
+        text = native instanceof Error ? native.message : String(native);
+      }
+      const reason = decodeChargeErrorReason(text);
+      if (reason) return reason;
+    } catch {
+      // Not every diagnostic event's data decodes to something meaningful
+      // (many are plain log/debug events); skip and keep scanning.
+      continue;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Recovers the typed reason `recordFailure` encoded into `lastError`
+ * (`"<Reason>: <message>"`), for callers (e.g. an API route or the
+ * notification copy) that want to branch on it instead of re-matching text.
+ * Returns `undefined` for a `lastError` that predates this encoding or was
+ * never decodable in the first place.
+ */
+export function parseLastErrorReason(
+  lastError: string | null | undefined
+): SubscriptionChargeErrorReason | undefined {
+  if (!lastError) return undefined;
+  const prefix = lastError.split(":", 1)[0];
+  return (Object.values(SubscriptionChargeErrorReason) as string[]).includes(prefix)
+    ? (prefix as SubscriptionChargeErrorReason)
+    : undefined;
 }
 
 function errorMessage(error: unknown): string {
@@ -217,7 +345,15 @@ export class SubscriptionExecutor {
     }
   }
 
-  /** Runs one pass over every due subscription. Public so tests can drive it. */
+  /**
+   * Runs one pass over every due subscription. Public so tests can drive it.
+   *
+   * Safe to run on several backend instances at once (#394): each due
+   * subscription is claimed atomically before it is charged, so overlapping
+   * ticks — a Railway scale-up, a rolling deploy, or a developer's local
+   * backend sharing the database — submit exactly one charge per due
+   * subscription. `this.running` only prevents overlap within one process.
+   */
   async tick(): Promise<void> {
     if (this.running) return;
     // #278: a detected testnet reset invalidates every cached on-chain ID, so
@@ -243,6 +379,27 @@ export class SubscriptionExecutor {
       const CONCURRENCY_LIMIT = 5;
       
       const processSubscription = async (subscription: Subscription) => {
+        // #394: another instance may have charged or claimed this
+        // subscription between our findMany and this claim attempt. Claiming
+        // is a single conditional UPDATE, so exactly one instance wins.
+        let claimed = false;
+        try {
+          claimed = await this.claim(subscription);
+        } catch (error) {
+          log("error", "SubscriptionExecutor claim failed", {
+            subscriptionId: subscription.id,
+            error: (error as Error).message,
+          });
+          return;
+        }
+
+        if (!claimed) {
+          log("info", "SubscriptionExecutor skipped claimed subscription", {
+            subscriptionId: subscription.id,
+          });
+          return;
+        }
+
         try {
           await this.charge(subscription);
         } catch (error) {
@@ -255,6 +412,11 @@ export class SubscriptionExecutor {
             token: subscription.token,
             error: errorMessage,
           });
+        } finally {
+          // Always release, on success and failure alike, so the next tick
+          // (here or on another instance) can retry or see the new
+          // nextChargeAt. A crash instead leaves the claim to expire.
+          await this.releaseClaim(subscription.id);
         }
       };
 
@@ -277,6 +439,55 @@ export class SubscriptionExecutor {
     }
   }
 
+  /**
+   * Atomically claims one due subscription for this instance (#394).
+   *
+   * The conditional `updateMany` is the cross-instance lock: it only matches
+   * while the subscription is still active and due and is either unclaimed or
+   * holds a claim older than the TTL, and it reports how many rows it
+   * changed. Outside a transaction, Postgres serialises the competing UPDATEs
+   * on the row, so exactly one instance gets `count === 1` and the others get
+   * `count === 0`. A claim abandoned by a crashed instance expires after
+   * `SUBSCRIPTION_EXECUTOR_CLAIM_TTL_MS`, after which a later tick takes it
+   * over.
+   */
+  private async claim(subscription: Subscription): Promise<boolean> {
+    const now = new Date();
+    const expiredBefore = new Date(now.getTime() - getClaimTtlMs());
+
+    const { count } = await prisma.subscription.updateMany({
+      where: {
+        id: subscription.id,
+        active: true,
+        nextChargeAt: { lte: now },
+        OR: [{ claimedAt: null }, { claimedAt: { lt: expiredBefore } }],
+      },
+      data: { claimedAt: now, claimedBy: EXECUTOR_INSTANCE_ID },
+    });
+
+    return count === 1;
+  }
+
+  /**
+   * Releases this instance's claim on a subscription. Scoped by `claimedBy` so
+   * an instance whose claim already expired and was taken over cannot clear
+   * the new owner's claim. A failed release is only logged: the TTL still
+   * recovers the subscription, so it must not fail the tick.
+   */
+  private async releaseClaim(subscriptionId: number): Promise<void> {
+    try {
+      await prisma.subscription.updateMany({
+        where: { id: subscriptionId, claimedBy: EXECUTOR_INSTANCE_ID },
+        data: { claimedAt: null, claimedBy: null },
+      });
+    } catch (error) {
+      log("error", "SubscriptionExecutor failed to release claim", {
+        subscriptionId,
+        error: (error as Error).message,
+      });
+    }
+  }
+
   private async charge(subscription: Subscription): Promise<void> {
     let hash: string;
     try {
@@ -290,7 +501,15 @@ export class SubscriptionExecutor {
         await this.recordExecutorSideFailure(subscription, cause);
         return;
       }
-      await this.recordFailure(subscription, errorMessage(error));
+      const message = errorMessage(error);
+      // #283: distinguish InsufficientAllowance ("re-approve") from
+      // InsufficientBalance ("top up") instead of collapsing both into the
+      // same generic "failed on-chain" string, decoded from whichever of
+      // `message`/`cause` carries the contract's `Error(Contract, #N)`
+      // marker (a simulation-time rejection surfaces it directly in
+      // `message`; an on-chain revert's is appended by `confirm()` above).
+      const reason = decodeChargeErrorReason(message) ?? decodeChargeErrorReason(cause);
+      await this.recordFailure(subscription, message, reason);
       return;
     }
 
@@ -395,11 +614,20 @@ export class SubscriptionExecutor {
     });
   }
 
-  private async recordFailure(subscription: Subscription, message: string): Promise<void> {
+  private async recordFailure(
+    subscription: Subscription,
+    message: string,
+    reason?: SubscriptionChargeErrorReason
+  ): Promise<void> {
     const isPermanent = message.includes("failed on-chain") || message.includes("reverted");
     const failureCount = (subscription.failureCount ?? 0) + 1;
     const maxAttempts = isPermanent ? 3 : 24; // bounded attempts
     const shouldDeactivate = failureCount >= maxAttempts;
+    // Stored as "<Reason>: <message>" when decoded, so `lastError` stays a
+    // single human-readable string (shown as-is in notifications/UI) while
+    // still letting callers that need the typed reason extract it with
+    // `parseLastErrorReason` instead of re-matching the raw message.
+    const storedError = reason ? `${reason}: ${message}` : message;
 
     log("error", "SubscriptionExecutor charge failed", {
       subscriptionId: subscription.id,
@@ -408,6 +636,7 @@ export class SubscriptionExecutor {
       amount: subscription.amount,
       token: subscription.token,
       error: message,
+      reason,
       isPermanent,
       failureCount,
       shouldDeactivate,
@@ -448,8 +677,8 @@ export class SubscriptionExecutor {
     // maxAttempts, mark active = false so we stop retrying forever.
     await prisma.subscription.update({
       where: { id: subscription.id },
-      data: { 
-        lastError: message, 
+      data: {
+        lastError: storedError,
         failureCount,
         ...(shouldDeactivate ? { active: false } : {}),
         ...(notified ? { failureNotifiedAt: new Date() } : {}) 
@@ -533,7 +762,11 @@ export class SubscriptionExecutor {
       );
       if (result.status === "SUCCESS") return hash;
       if (result.status === "FAILED") {
-        throw new Error(`Transaction ${hash} failed on-chain`);
+        const reason = decodeChargeErrorReasonFromDiagnostics(result.diagnosticEventsXdr);
+        const suffix = reason
+          ? ` (Error(Contract, #${REASON_TO_CONTRACT_ERROR_CODE[reason]}))`
+          : "";
+        throw new Error(`Transaction ${hash} failed on-chain${suffix}`);
       }
 
       const elapsed = Date.now() - startedAt;

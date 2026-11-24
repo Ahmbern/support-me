@@ -2,6 +2,10 @@ import type { NextConfig } from "next";
 import { withSentryConfig } from "@sentry/nextjs";
 
 const nextConfig: NextConfig = {
+  env: {
+    // Inline a value even when the flag is unset so the mock branches can be removed.
+    NEXT_PUBLIC_E2E: process.env.NEXT_PUBLIC_E2E ?? '',
+  },
   images: {
     remotePatterns: [
       {
@@ -12,13 +16,21 @@ const nextConfig: NextConfig = {
   },
 };
 
+const sentryConfigured = Boolean(
+  process.env.SENTRY_AUTH_TOKEN && process.env.SENTRY_ORG && process.env.SENTRY_PROJECT
+);
+
 export default withSentryConfig(nextConfig, {
   // For all available options, see:
   // https://www.npmjs.com/package/@sentry/webpack-plugin#options
 
-  org: "sam-ch",
+  org: process.env.SENTRY_ORG,
 
-  project: "javascript-nextjs",
+  project: process.env.SENTRY_PROJECT,
+
+  authToken: process.env.SENTRY_AUTH_TOKEN,
+
+  sourcemaps: { disable: !sentryConfigured },
 
   // Only print logs for uploading source maps in CI
   silent: !process.env.CI,
@@ -27,13 +39,13 @@ export default withSentryConfig(nextConfig, {
   // https://docs.sentry.io/platforms/javascript/guides/nextjs/manual-setup/
 
   // Upload a larger set of source maps for prettier stack traces (increases build time)
-  widenClientFileUpload: true,
+  widenClientFileUpload: sentryConfigured,
 
   // Route browser requests to Sentry through a Next.js rewrite to circumvent ad-blockers.
   // This can increase your server load as well as your hosting bill.
   // Note: Check that the configured route will not match with your Next.js middleware, otherwise reporting of client-
   // side errors will fail.
-  tunnelRoute: "/monitoring",
+  tunnelRoute: sentryConfigured ? "/monitoring" : undefined,
 
   webpack: {
     // Enables automatic instrumentation of Vercel Cron Monitors. (Does not yet work with App Router route handlers.)

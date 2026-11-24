@@ -103,6 +103,10 @@ required environment variables, and curl walkthroughs.
 - Keep the README Roadmap checklist accurate as features ship.
 - Design new UI areas (widgets, themes, …) in `docs/design/` before implementing them.
 - Avoid adding contract complexity unless it is required by the feature.
+- Keep one-off scratch scripts (e.g. a throwaway script used once to resolve
+  a merge conflict) out of the repo root, and out of the commit entirely once
+  they've served their purpose. Run them from a local, gitignored scratch
+  directory instead.
 
 ## Dependency Updates
 
@@ -118,7 +122,13 @@ test suite locally if CI doesn't give you enough confidence on its own.
 
 ## Reporting Issues
 
-If you find a bug or want to propose a feature, open an issue with:
+Use the [bug report](.github/ISSUE_TEMPLATE/bug_report.md) or
+[feature request](.github/ISSUE_TEMPLATE/feature_request.md) template when
+opening an issue. Both follow the project's Intro / What to be done /
+Acceptance criteria format. For support questions, see
+[testnet troubleshooting](docs/testnet-troubleshooting.md).
+
+If you find a bug or want to propose a feature, include:
 
 - Summary of the problem or feature
 - Steps to reproduce / expected behavior

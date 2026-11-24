@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { assetCode, stellarAddress } from "./common";
 import { contrastRatio, WCAG_AA_TEXT } from "../lib/contrast";
+import { isReservedUsername } from "../lib/reservedUsernames";
+import { avatarUrlSchema, socialLinksSchema } from "./profileUrls";
 
 export const usernameParamSchema = z.object({
   username: z.string().min(1, "username is required"),
@@ -20,6 +22,7 @@ export const leaderboardQuerySchema = z.object({
   // and 1 USDC are not the same value), so a single currency is ranked at a
   // time — defaulting to XLM, the platform's default asset.
   currency: assetCode.optional().default("XLM"),
+  period: z.enum(["all", "month", "week"]).optional().default("all"),
   page: z.coerce.number().int().positive().optional().default(1),
   limit: z.coerce.number().int().positive().max(100).optional().default(20),
 });
@@ -32,29 +35,31 @@ const usernamePattern = /^[a-zA-Z0-9_-]{3,30}$/;
 const walletSignature = z.string().min(1).max(512);
 
 export const createCreatorSchema = z.object({
-  // Defaults to the authenticated user's own wallet. The signup form sends ""
-  // when no wallet is connected yet.
-  walletAddress: stellarAddress.or(z.literal("")).optional(),
+  // Defaults to the authenticated user's wallet. Accept the old signup form's
+  // empty sentinel for compatibility, but normalize it before persistence.
+  walletAddress: stellarAddress.or(z.literal("")).nullable().optional(),
   walletSignature: walletSignature.optional(),
   displayName: z.string().max(80).optional(),
   bio: z.string().max(500).optional(),
-  avatarUrl: z.string().url().optional(),
+  avatarUrl: avatarUrlSchema.optional(),
 });
 
 export const createCreatorParamsSchema = z.object({
   username: z
     .string()
-    .regex(usernamePattern, "username must be 3-30 characters (letters, numbers, _ or -)"),
+    .regex(usernamePattern, "username must be 3-30 characters (letters, numbers, _ or -)")
+    .refine((username) => !isReservedUsername(username), {
+      message: "This username is reserved and cannot be used",
+    }),
 });
 
 export const updateCreatorSchema = z.object({
   displayName: z.string().max(80).optional(),
   bio: z.string().max(500).optional(),
-  avatarUrl: z.string().url().optional(),
+  avatarUrl: avatarUrlSchema.optional(),
   walletAddress: stellarAddress.optional(),
   walletSignature: walletSignature.optional(),
-  // Values are usually full URLs, but a bare "Website" entry is stored as typed.
-  socialLinks: z.record(z.string().max(32), z.string().max(300)).optional(),
+  socialLinks: socialLinksSchema.optional(),
   acceptsXlm: z.boolean().optional(),
   acceptsUsdc: z.boolean().optional(),
   acceptsUsdt: z.boolean().optional(),

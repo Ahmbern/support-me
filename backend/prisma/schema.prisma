@@ -86,7 +86,7 @@ model Creator {
   userId        Int            @unique
   user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
   username      String         @unique
-  walletAddress String
+  walletAddress String?
   displayName   String?
   bio           String?
   avatarUrl     String?
@@ -112,7 +112,7 @@ model Creator {
   // empty array and "never configured" stay distinguishable if that
   // matters later. Denominated in whatever asset the supporter picks on
   // the donate page, same as Goal.currency — not tied to a single currency.
-  presetAmounts Float[]        @default([])
+  presetAmounts Decimal[]      @default([]) @db.Decimal(20, 7)
   // Custom public-profile theme (#227): { backgroundColor, accentColor,
   // font, layout }, validated by schemas/creators.ts's themeSchema. Null
   // means the default design, so existing creators are unaffected.
@@ -125,10 +125,11 @@ model Creator {
   goals         Goal[]
 
   @@index([walletAddress])
-  // A non-empty walletAddress is unique across creators (#276). That is a
+  // A connected walletAddress is unique across creators (#276). That is a
   // partial unique index ("walletAddress" <> '') created in migration
   // 20261018000000_creator_wallet_unique, which Prisma's schema language
-  // cannot express, so it is not declared here.
+  // cannot express, so it is not declared here. Unconnected wallets are null;
+  // a database check constraint prevents the former empty-string sentinel.
 }
 
 model Donation {
@@ -167,6 +168,10 @@ model DonationIdempotencyKey {
   donation   Donation @relation(fields: [donationId], references: [id], onDelete: Cascade)
   expiresAt  DateTime
   createdAt  DateTime @default(now())
+  // SHA-256 of the canonical request fields (#391). Nullable because keys
+  // created before this change cannot be verified; a replay of one is treated
+  // as a mismatch rather than silently returning the original donation.
+  requestHash String?
 }
 
 model Withdrawal {
@@ -180,6 +185,12 @@ model Withdrawal {
   anchorTxId  String // SEP-24 transaction id
   stellarTxId String? // on-chain payment to the anchor (stellar_transaction_id)
   status      String   @default("completed")
+  // Defaults to false (#393): a self-reported withdrawal is never trusted
+  // as real until a verification path (see routes/withdrawals.ts, and the
+  // "not yet implemented" note on verifyWithdrawal) confirms it against the
+  // anchor or Horizon. Mirrors Donation.verified's same client-report
+  // distrust.
+  verified    Boolean  @default(false)
   createdAt   DateTime @default(now())
 
   // A given anchor transaction maps to exactly one withdrawal record. Lets the
@@ -207,8 +218,8 @@ model Goal {
   // Optional longer blurb shown under the title on the public profile
   // (e.g. what the funds are for).
   description   String?
-  targetAmount  Float
-  currentAmount Float               @default(0)
+  targetAmount  Decimal             @db.Decimal(20, 7)
+  currentAmount Decimal             @default(0) @db.Decimal(20, 7)
   // Asset this goal is denominated in ("XLM", "USDC", "USDT", ...). Amounts
   // are tracked per-asset, never normalized to USD — see the reasoning in
   // services/goalService.ts.
@@ -264,6 +275,13 @@ model Subscription {
   // executor (which retries every tick) sends one notice per failure streak
   // instead of one per retry. Cleared on the next successful charge.
   failureNotifiedAt DateTime?
+  // Distributed-executor claim (#394): set while one backend instance is
+  // charging this subscription so a concurrent tick() on another instance
+  // skips it. Released when the charge finishes; an unreleased claim older
+  // than SUBSCRIPTION_EXECUTOR_CLAIM_TTL_MS is treated as abandoned by a
+  // crashed instance and can be taken over by a later tick.
+  claimedAt         DateTime?
+  claimedBy         String?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 

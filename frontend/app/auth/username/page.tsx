@@ -51,7 +51,7 @@ export default function CreateUsernamePage() {
             'Authorization': `Bearer ${token}`,
           },
           body: JSON.stringify({
-            walletAddress: user?.walletAddress || '',
+            walletAddress: user?.walletAddress ?? null,
             displayName: displayName || username,
           }),
         }
@@ -59,7 +59,11 @@ export default function CreateUsernamePage() {
 
       if (!res.ok) {
         const data = await res.json();
-        throw new Error(data.error || 'Failed to create username');
+        // Validation errors (reserved username, bad shape, etc.) carry the
+        // useful message on the first issue's `details` entry (#387); the
+        // top-level `error` is just a generic "Validation failed" label.
+        const message = data.details?.[0]?.message || data.error || 'Failed to create username';
+        throw new Error(message);
       }
 
       router.push('/app');

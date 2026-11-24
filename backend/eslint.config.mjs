@@ -18,7 +18,7 @@ export default tseslint.config(
         // "recommended + no-floating-promises + no-unused-vars" baseline the
         // issue asked for, rather than opting into the much stricter
         // `recommendedTypeChecked` preset's `no-unsafe-*` family.
-        projectService: { allowDefaultProject: ["prisma/seed.ts"] },
+        projectService: { allowDefaultProject: ["prisma/seed.ts", "prisma/reportReservedUsernames.ts", "prisma/*.ts"] },
         tsconfigRootDir: import.meta.dirname,
       },
     },
@@ -32,6 +32,14 @@ export default tseslint.config(
         "warn",
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
       ],
+    },
+  },
+  {
+    // Standalone CommonJS ops/demo scripts run directly with node.
+    files: ["scripts/**/*.js"],
+    rules: {
+      "@typescript-eslint/no-require-imports": "off",
+      "@typescript-eslint/no-unused-vars": "off",
     },
   }
 );

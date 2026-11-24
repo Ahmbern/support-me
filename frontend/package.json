@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "engines": {
-    "node": ">=20",
+    "node": ">=24",
     "npm": ">=11"
   },
   "scripts": {
@@ -12,6 +12,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "check:i18n": "node scripts/check-message-parity.mjs",
     "test": "vitest run",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
@@ -22,10 +23,8 @@
     "@hugeicons/core-free-icons": "^4.3.5",
     "@hugeicons/react": "^1.1.9",
     "@sentry/nextjs": "^10.68.0",
-    "@stellar/freighter-api": "^6.0.1",
     "@stellar/stellar-sdk": "^14.6.1",
     "autoprefixer": "^10.4.27",
-    "bignumber.js": "^10.0.2",
     "next": "^16.1.6",
     "next-intl": "^4.14.7",
     "postcss": "^8.5.9",

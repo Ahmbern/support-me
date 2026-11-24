@@ -21,6 +21,20 @@ after a change.
 | `CORS_ALLOWED_ORIGINS` | Optional; set for deployed browser frontends. | Empty. Comma-separated exact origins. Outside production, `https://localhost:3000`, `https://127.0.0.1:3000`, `http://localhost:3000` and `http://127.0.0.1:3000` are added automatically (the frontend's `npm run dev` serves HTTPS; `npm run dev:http` and Playwright use HTTP). Production allows no browser origins unless configured. |
 | `TRUST_PROXY` | Optional; set when the API is behind a trusted reverse proxy. | Unset leaves Express's default. Set to the number of proxy hops (commonly `1` on Railway) so IP-based limits see the client address. |
 
+## Profile images and social links
+
+| Variable | Required? | Default / behavior |
+| --- | --- | --- |
+| `CLOUDINARY_CLOUD_NAME` | Required to save an avatar URL. | Unset rejects avatar writes. Must match the frontend upload signer's cloud name. Only HTTPS URLs on `res.cloudinary.com` whose first path segment is this exact cloud name are accepted. The backend does not need the Cloudinary API key or secret. |
+
+Creation and update apply the same avatar policy. Other profile edits continue
+to work without Cloudinary configured. Social links accept only absolute HTTP(S)
+URLs without credentials, or handles expanded for the known platform keys:
+`twitter`, `instagram`, `youtube`, `tiktok`, `github`, `linkedin`, `telegram`, and
+`website`. Website entries require a complete URL; LinkedIn handles use
+`in/username`. Unknown keys and non-HTTP schemes are rejected with HTTP 400.
+Send an empty object to clear all social links.
+
 ## Public API rate limits
 
 All values must be positive integers. Window values are milliseconds. Limits
@@ -67,6 +81,7 @@ as well if the listener needs a non-default endpoint.
 | `EXECUTOR_SECRET_KEY` | Required for normal backend startup because the subscription executor is started with the server. | None. This operational Stellar key must be registered as the donation contract executor and funded for transaction fees. Do not reuse a user wallet or commit the secret. On testnet/futurenet a missing account is auto-funded via Friendbot at startup (#279). |
 | `SUBSCRIPTION_EXECUTOR_POLL_INTERVAL_MS` | Optional. | `60000` ms. |
 | `SUBSCRIPTION_EXECUTOR_EXPECTED_INTERVAL_MS` | Optional. | Three times the polling interval, or `180000` ms with the default poll interval. Used by executor health reporting. |
+| `SUBSCRIPTION_EXECUTOR_CLAIM_TTL_MS` | Optional. | `300000` ms. How long one backend instance's claim on a due subscription is held before another instance may take it over. This recovers charges abandoned by a crashed instance (#394); keep it comfortably above the longest possible charge attempt. |
 | `FRIENDBOT_URL` | Optional. | `https://friendbot.stellar.org`. Endpoint used to auto-fund a missing executor account on testnet/futurenet; never called on mainnet. |
 | `EXECUTOR_LOW_BALANCE_XLM` | Optional. | `0.5`. XLM balance below which `/health/executor` reports `lowBalance: true`. |
 | `GOAL_RESET_CHECK_INTERVAL_MS` | Optional. | `3600000` ms (one hour). |

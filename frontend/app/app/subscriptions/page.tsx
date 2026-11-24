@@ -41,24 +41,50 @@ function SubscriptionsList() {
   const { user, token } = useAuth();
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [retryNonce, setRetryNonce] = useState(0);
   const [cancellingId, setCancellingId] = useState<number | null>(null);
   const [subscriptionToCancel, setSubscriptionToCancel] = useState<Subscription | null>(null);
   const [subscriptionToRemove, setSubscriptionToRemove] = useState<Subscription | null>(null);
 
   useEffect(() => {
-    if (!user?.walletAddress) return;
-    fetchWithRetry(`${API_URL}/api/subscriptions?supporterAddress=${encodeURIComponent(user.walletAddress)}`)
+    if (!user?.walletAddress) {
+      setLoading(false);
+      return;
+    }
+
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    setLoadError(false);
+    setLoading(true);
+
+    fetchWithRetry(`${API_URL}/api/subscriptions?supporterAddress=${encodeURIComponent(user.walletAddress)}`, {
+      credentials: 'include',
+      headers,
+    })
       .then((res) => {
+        if (res.status === 401) {
+          const authErr = new Error('Session expired, sign in again');
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (authErr as any).isAuthError = true;
+          throw authErr;
+        }
         if (!res.ok) throw new Error('The server returned an error. Please try again.');
         return res.json();
       })
       .then(setSubscriptions)
       .catch((err) => {
+        setLoadError(true);
         if (isNetworkError(err)) return;
+        if (err?.isAuthError) {
+          notify.error('Session expired, sign in again');
+          return;
+        }
         notify.error('Could not load your subscriptions', err);
       })
       .finally(() => setLoading(false));
-  }, [user?.walletAddress]);
+  }, [user?.walletAddress, token, retryNonce]);
 
   const handleCancel = async (subscription: Subscription) => {
     if (!user?.walletAddress) return;
@@ -72,9 +98,12 @@ function SubscriptionsList() {
       // The on-chain cancel (which also revokes the allowance) is what stops
       // charges; this call only updates our records, so a failure here is a
       // warning rather than an error.
+      const cancelHeaders: Record<string, string> = {};
+      if (token) cancelHeaders['Authorization'] = `Bearer ${token}`;
       const recordRes = await fetchWithRetry(`${API_URL}/api/subscriptions/${subscription.id}/cancel`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
+        credentials: 'include',
+        headers: cancelHeaders,
       }).catch(() => null);
 
       setSubscriptions((prev) =>
@@ -105,9 +134,12 @@ function SubscriptionsList() {
 
   const handleRemoveStaleRecord = async (subscription: Subscription) => {
     try {
+      const removeHeaders: Record<string, string> = {};
+      if (token) removeHeaders['Authorization'] = `Bearer ${token}`;
       const recordRes = await fetchWithRetry(`${API_URL}/api/subscriptions/${subscription.id}/cancel`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
+        credentials: 'include',
+        headers: removeHeaders,
       });
       if (recordRes?.ok) {
         setSubscriptions((prev) => prev.filter((s) => s.id !== subscription.id));
@@ -136,9 +168,30 @@ function SubscriptionsList() {
         </div>
 
         {loading ? (
-          <div className="space-y-3">
+          <div className="space-y-3" data-testid="subscriptions-skeleton">
             <Skeleton className="h-24 w-full" />
             <Skeleton className="h-24 w-full" />
+          </div>
+        ) : !user?.walletAddress ? (
+          <div className="card-brutal p-8 text-center space-y-3">
+            <p className="text-muted font-medium">
+              Connect a wallet to start or manage recurring donations
+            </p>
+            <div>
+              <Link
+                href="/settings"
+                className="btn-brutal btn-brutal-white inline-block text-sm py-2 px-4"
+              >
+                Go to Settings
+              </Link>
+            </div>
+          </div>
+        ) : loadError ? (
+          <div className="card-brutal p-8 text-center space-y-3" role="alert">
+            <p className="text-ink font-bold">Could not load your subscriptions.</p>
+            <button type="button" onClick={() => { setLoadError(false); setRetryNonce((value) => value + 1); }} className="btn-brutal btn-brutal-white text-sm py-2 px-4">
+              Retry
+            </button>
           </div>
         ) : subscriptions.length === 0 ? (
           <div className="card-brutal p-8 text-center">
@@ -183,6 +236,7 @@ function SubscriptionsList() {
                   <button
                     onClick={() => setSubscriptionToCancel(subscription)}
                     disabled={cancellingId === subscription.id}
+                    aria-label={`Cancel donation to ${subscription.creator.displayName || subscription.creator.username}`}
                     className="text-sm font-bold text-ink/60 hover:text-ink underline underline-offset-2 shrink-0"
                   >
                     {cancellingId === subscription.id ? 'Cancelling…' : 'Cancel'}
