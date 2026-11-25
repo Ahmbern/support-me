@@ -147,11 +147,13 @@ app.get("/health", healthRateLimit, async (req, res) => {
       ? "unhealthy"
       : subscriptionExecutor.status === "unhealthy"
         ? "unhealthy"
-        : sorobanRpc.status !== "ok"
+        : subscriptionExecutor.status === "degraded"
           ? "degraded"
-          : eventListener.gapDetected
+          : sorobanRpc.status !== "ok"
             ? "degraded"
-            : "ok";
+            : eventListener.gapDetected
+              ? "degraded"
+              : "ok";
   // Public liveness stays minimal. The dependency breakdown (including the
   // listener cursor and reset reason) is only for authorized operators (#440).
   if (!hasHealthDetailAccess(req)) return res.json({ status });
@@ -165,7 +167,10 @@ app.get("/health", healthRateLimit, async (req, res) => {
 
 app.get("/health/executor", healthRateLimit, (req, res) => {
   const subscriptionExecutor = executorHealth.getHealth();
-  const status = subscriptionExecutor.status === "unhealthy" ? "unhealthy" : "ok";
+  // `disabled` stays `ok` for backward compatibility; `degraded` and
+  // `unhealthy` are passed through so monitors see a run whose charges are
+  // mostly or entirely failing (#500).
+  const status = subscriptionExecutor.status === "disabled" ? "ok" : subscriptionExecutor.status;
   // Unauthenticated callers get only the aggregate status. Balances, error
   // strings and subscription ids require the operator detail secret (#440).
   if (!hasHealthDetailAccess(req)) return res.json({ status });
