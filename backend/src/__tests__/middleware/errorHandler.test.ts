@@ -96,6 +96,8 @@ describe("errorHandler middleware", () => {
       code: "CONFLICT",
       requestId: "req-123",
     });
+    expect(JSON.stringify(json.mock.calls)).not.toContain("email");
+    expect(Sentry.captureException).not.toHaveBeenCalled();
   });
 
   it("never exposes Prisma target column names in a P2002 response", () => {
