@@ -315,6 +315,8 @@ model EmailEvent {
   // can be linked back to the SENT row for the same recipient. Null for
   // send attempts that failed before Resend returned an id.
   providerMessageId String?
+  // Svix delivery id used to make webhook processing idempotent.
+  svixId            String?        @unique
   // Populated on FAILED/BOUNCED rows so the failure is diagnosable from the
   // row alone, without cross-referencing stdout logs.
   errorDetail       String?
