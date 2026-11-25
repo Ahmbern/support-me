@@ -1157,8 +1157,14 @@ Common error codes returned by the API:
 - `NOT_FOUND`: Resource not found
 - `CONFLICT`: Resource already exists or conflict with current state
 - `BAD_REQUEST`: Invalid request parameters
+- `VALIDATION_ERROR`: Malformed JSON body or failed schema validation
+- `PAYLOAD_TOO_LARGE`: JSON body exceeds the explicit 100kb limit (HTTP 413)
+- `UNSUPPORTED_CHARSET` / `UNSUPPORTED_ENCODING`: Body encoding is not accepted (HTTP 415)
 - `TOO_MANY_REQUESTS`: Rate limit exceeded
 - `INTERNAL_ERROR`: Server error
+
+Client-side body-parser errors (4xx) include `requestId` when available and are
+not reported to Sentry.
 
 ---
 
