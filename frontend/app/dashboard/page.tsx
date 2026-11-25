@@ -55,7 +55,7 @@ type ActivityItem =
 
 export default function DashboardPage() {
   const { user, token } = useAuth();
-  const { creator, loading } = useCreator();
+  const { creator, loading, error: creatorError, invalidate } = useCreator();
   const [donations, setDonations] = useState<Donation[]>([]);
   const [withdrawals, setWithdrawals] = useState<Withdrawal[]>([]);
   const [donationPage, setDonationPage] = useState(1);
@@ -348,6 +348,22 @@ export default function DashboardPage() {
     return (
       <ProtectedRoute>
         <DashboardSkeleton />
+      </ProtectedRoute>
+    );
+  }
+
+  if (!creator && creatorError) {
+    return (
+      <ProtectedRoute>
+        <div className="min-h-screen bg-background flex items-center justify-center px-4">
+          <div className="card-brutal bg-card p-10 text-center max-w-md">
+            <h1 className="text-2xl font-extrabold text-ink mb-4">Couldn&apos;t Load Profile</h1>
+            <p className="text-muted font-medium mb-6">{creatorError}</p>
+            <button type="button" onClick={invalidate} className="btn-brutal btn-brutal-primary">
+              Retry
+            </button>
+          </div>
+        </div>
       </ProtectedRoute>
     );
   }
