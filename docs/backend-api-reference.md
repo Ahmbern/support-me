@@ -748,6 +748,37 @@ Get a creator's goals.
 
 ---
 
+### GET /api/goals/:id/periods
+
+Get a recurring goal's finished periods, newest first.
+
+**Auth Required:** No
+
+**Response:**
+```json
+{
+  "items": [
+    {
+      "id": 1,
+      "goalId": 1,
+      "start": "2024-01-01T00:00:00.000Z",
+      "end": "2024-02-01T00:00:00.000Z",
+      "raised": 120.0,
+      "targetAmount": 100.0,
+      "reached": true,
+      "createdAt": "2024-02-01T00:05:00.000Z"
+    }
+  ]
+}
+```
+
+**Notes:**
+- A row is written each time a recurring goal resets, just before `currentAmount` is zeroed
+- `targetAmount` is the target that applied when the period ended; `reached` is `raised >= targetAmount`
+- Period ends follow the goal's schedule: the next `currentPeriodEnd` is one interval after the previous end (calendar months for `MONTHLY`, clamped to the last day of shorter months)
+
+---
+
 ### POST /api/goals/:username
 
 Create a goal for a creator.
