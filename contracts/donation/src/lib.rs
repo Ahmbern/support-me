@@ -1066,6 +1066,9 @@ impl DonationContract {
             soroban_sdk::panic_with_error!(&env, DonationError::Paused);
         }
         donor.require_auth();
+        if donor == creator {
+            soroban_sdk::panic_with_error!(&env, DonationError::SelfDonation);
+        }
         if amount <= 0 {
             soroban_sdk::panic_with_error!(&env, DonationError::InvalidAmount);
         }
@@ -1153,6 +1156,9 @@ impl DonationContract {
             soroban_sdk::panic_with_error!(&env, DonationError::Paused);
         }
         supporter.require_auth();
+        if supporter == creator {
+            soroban_sdk::panic_with_error!(&env, DonationError::SelfDonation);
+        }
         if amount <= 0 {
             soroban_sdk::panic_with_error!(&env, DonationError::InvalidAmount);
         }
