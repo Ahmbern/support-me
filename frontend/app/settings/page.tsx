@@ -21,6 +21,7 @@ import { AccountDataSection } from '@/components/AccountDataSection';
 import { ThemeEditor } from '@/components/ThemeEditor';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { explorerAccountUrl } from '@/lib/stellarNetwork';
+import { formatAmount } from '@/lib/format';
 
 interface Goal {
   id: number;
@@ -729,7 +730,7 @@ export default function SettingsPage() {
                               <p className="text-sm text-ink/80 font-medium">{g.description}</p>
                             )}
                             <p className="text-sm text-muted font-medium">
-                              {g.currentAmount.toFixed(0)} / {g.targetAmount.toFixed(0)} {g.currency} ({pct.toFixed(0)}%)
+                              {formatAmount(g.currentAmount)} / {formatAmount(g.targetAmount)} {g.currency} ({pct.toFixed(0)}%)
                             </p>
                           </div>
                           <div className="flex gap-2 shrink-0">
@@ -942,7 +943,7 @@ function GoalSummary({ goal }: { goal: Goal }) {
   return (
     <div className="card-brutal bg-card p-4 space-y-2">
       <p className="text-sm font-bold text-ink">
-        {goal.currentAmount.toFixed(0)} / {goal.targetAmount.toFixed(0)} {goal.currency} raised ({pct.toFixed(0)}%)
+        {formatAmount(goal.currentAmount)} / {formatAmount(goal.targetAmount)} {goal.currency} raised ({pct.toFixed(0)}%)
       </p>
       <div
         className="h-3 w-full border-2 border-ink rounded-full overflow-hidden bg-background"
