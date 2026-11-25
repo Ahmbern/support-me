@@ -232,13 +232,33 @@ model Goal {
   recurrenceInterval RecurrenceInterval?
   // Only meaningful when `recurring` is true: the instant the current
   // progress period ends and `currentAmount` resets to 0. Set to
-  // `now() + interval` whenever a recurring goal is created or reset.
+  // `now() + interval` when a recurring goal is created, then advanced from
+  // the previous end (not the reset time) on each reset so it never drifts.
   currentPeriodEnd   DateTime?
   createdAt     DateTime            @default(now())
   updatedAt     DateTime            @updatedAt
+  periods       GoalPeriod[]
 
   @@index([creatorId])
   @@index([recurring, currentPeriodEnd])
+}
+
+// History of a recurring goal's finished periods: one row is written by the
+// reset (services/goalService.ts resetDueGoals) just before `currentAmount`
+// is zeroed, so creators keep how much each period raised and whether it hit
+// the target that applied at the time.
+model GoalPeriod {
+  id           Int      @id @default(autoincrement())
+  goal         Goal     @relation(fields: [goalId], references: [id], onDelete: Cascade)
+  goalId       Int
+  start        DateTime
+  end          DateTime
+  raised       Decimal  @db.Decimal(20, 7)
+  targetAmount Decimal  @db.Decimal(20, 7)
+  reached      Boolean
+  createdAt    DateTime @default(now())
+
+  @@index([goalId, end])
 }
 
 enum GoalStatus {
